@@ -1,0 +1,46 @@
+{
+  "_comment": "Edit this file to update your company's naming convention rules. No code changes needed.",
+
+  "naming_format": "[Brand] [Fragrance Name] [Size]ml [Type]",
+
+  "valid_types": ["EDP", "EDT", "EDC", "Parfum", "Cologne"],
+
+  "valid_genders": ["Men", "Women", "Unisex"],
+
+  "size_format": "Numeric followed by ml — e.g. 100ml, 50ml, 75ml, 200ml",
+
+  "capitalization": "Brand names must be properly capitalized",
+
+  "common_corrections": {
+    "edp": "EDP",
+    "edt": "EDT",
+    "edc": "EDC",
+    "eau de parfum": "EDP",
+    "eau de toilette": "EDT",
+    "eau de cologne": "EDC",
+    "parfum": "Parfum",
+    "cologne": "Cologne"
+  },
+
+  "remark_codes": {
+    "OK": "Entry is correct, no changes needed",
+    "Name corrected": "Brand or fragrance name was fixed",
+    "Type corrected: X→Y": "EDP/EDT type was wrong — e.g. Type corrected: EDT→EDP",
+    "Size corrected: Xml→Yml": "Size/quantity was wrong — e.g. Size corrected: 100ml→50ml",
+    "Gender added": "Gender was missing and has been determined",
+    "Not found — manual review": "Product could not be verified online"
+  },
+
+  "email_search_keywords": [
+    "inventory",
+    "new items",
+    "fragrance",
+    "perfume",
+    "stock",
+    "weekly items"
+  ],
+
+  "search_target_site": "jomashop.com",
+
+  "search_fallback": "general web search for fragrance details"
+}
