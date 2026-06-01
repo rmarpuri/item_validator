@@ -17,11 +17,14 @@ on:
         required: false
         default: 'false'
 
-  # Auto-trigger strictly on data/items.csv pushes
+  # Auto-trigger strictly on any case variation of data/items.csv pushes
   push:
     branches: [main, develop]
     paths:
-      - 'data/items.csv' # Strictly triggers on this specific inventory file
+      - 'data/items.csv'
+      - 'data/items.CSV'
+      - 'data/ITEMS.CSV'
+      - 'data/Items.csv'
       - 'scripts/**/*.py'
       - 'src/**/*.py'
       - 'requirements.txt'
@@ -41,7 +44,6 @@ jobs:
     name: Validate Inventory
     runs-on: ubuntu-latest
     
-    # Permissions needed for GitHub Actions
     permissions:
       contents: write
       actions: read
@@ -76,19 +78,6 @@ jobs:
           fi
         shell: bash
 
-      - name: 🔍 Verify environment
-        run: |
-          echo "Python version:"
-          python --version
-          echo ""
-          echo "Pip packages:"
-          pip list
-          echo ""
-          echo "Environment:"
-          echo "- CSV File: ${{ github.event.inputs.csv_file || 'data/items.csv' }}"
-          echo "- Max Items: ${{ github.event.inputs.max_items || 'all' }}"
-          echo "- Verbose: ${{ github.event.inputs.verbose || 'false' }}"
-
       # =====================================================================
       # VALIDATION
       # =====================================================================
@@ -101,20 +90,28 @@ jobs:
         run: |
           set -e  # Exit on error
           
-          CSV_FILE="${{ github.event.inputs.csv_file || 'data/items.csv' }}"
-          MAX_ITEMS="${{ github.event.inputs.max_items || '0' }}"
-          VERBOSE="${{ github.event.inputs.verbose || 'false' }}"
+          INPUT_PATH="${{ github.event.inputs.csv_file || 'data/items.csv' }}"
+          DIR_NAME=$(dirname "$INPUT_PATH")
+          BASE_NAME=$(basename "$INPUT_PATH")
           
-          # Verify CSV file exists
-          if [ ! -f "$CSV_FILE" ]; then
-            echo "❌ CSV file not found: $CSV_FILE"
+          echo "🔍 Searching case-insensitively for target file matching: $BASE_NAME inside $DIR_NAME/"
+          
+          # Find file completely case-insensitively (-iname flags process variants like items.CSV)
+          TARGET_FILE=$(find "$DIR_NAME" -maxdepth 1 -iname "$BASE_NAME" | head -n 1)
+          
+          # Fallback check if find yielded nothing
+          if [ -z "$TARGET_FILE" ] || [ ! -f "$TARGET_FILE" ]; then
+            echo "❌ Target file not found case-insensitively using metadata path: $INPUT_PATH"
             exit 1
           fi
           
-          echo "📋 Validating: $CSV_FILE"
+          echo "📋 Validating Case-Matched Target: $TARGET_FILE"
           
-          # Build command
-          CMD="python3 scripts/test_local.py '$CSV_FILE'"
+          MAX_ITEMS="${{ github.event.inputs.max_items || '0' }}"
+          VERBOSE="${{ github.event.inputs.verbose || 'false' }}"
+          
+          # Build executable instruction string
+          CMD="python3 scripts/test_local.py '$TARGET_FILE'"
           
           if [ "$MAX_ITEMS" != "0" ]; then
             CMD="$CMD --max-items $MAX_ITEMS"
@@ -126,14 +123,14 @@ jobs:
           
           CMD="$CMD --output-dir ${{ env.OUTPUT_DIR }}"
           
-          # Run validation
-          echo "🚀 Running: $CMD"
+          # Run verification engine
+          echo "🚀 Executing pipeline: $CMD"
           eval $CMD
           
-          # Export outputs
+          # Export contextual step metadata back to workflow runners
           ITEM_COUNT=$(wc -l < "${{ env.OUTPUT_DIR }}/test_output.csv" || echo "0")
           echo "items_processed=$((ITEM_COUNT - 1))" >> $GITHUB_OUTPUT
-          echo "csv_file=$CSV_FILE" >> $GITHUB_OUTPUT
+          echo "csv_file=$TARGET_FILE" >> $GITHUB_OUTPUT
           
           echo "✅ Validation completed successfully"
         shell: bash
@@ -172,12 +169,9 @@ jobs:
           echo "## ✅ Validation Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Run Details:**" >> $GITHUB_STEP_SUMMARY
-          echo "- CSV File: \`${{ steps.validate.outputs.csv_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- CSV File Resolved: \`${{ steps.validate.outputs.csv_file }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Items Processed: ${{ steps.validate.outputs.items_processed }}" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ✅ Success" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Artifacts:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Results: \`validation-results-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
 
       - name: 📉 Generate failure summary
         if: always() && steps.validate.outcome != 'success'
@@ -187,11 +181,6 @@ jobs:
           echo "**Error Details:**" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ❌ Failed" >> $GITHUB_STEP_SUMMARY
           echo "- Action: Review logs in [Actions](../../actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Troubleshooting:**" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check API keys are set in Secrets" >> $GITHUB_STEP_SUMMARY
-          echo "2. Verify CSV file format and path" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check Python dependencies in requirements.txt" >> $GITHUB_STEP_SUMMARY
 
       # =====================================================================
       # COMMIT BACK TO REPO
@@ -204,50 +193,13 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Add results
           git add ${{ env.OUTPUT_DIR }}/test_output.csv
           
-          # Create commit message
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           ITEMS=${{ steps.validate.outputs.items_processed }}
           COMMIT_MSG="✅ Auto-validation: Processed $ITEMS items - $TIMESTAMP"
           
-          # Commit and safely push (handles potential protected branch rules gracefully)
           git commit -m "$COMMIT_MSG" && git push origin HEAD:${{ github.ref }} || echo "⚠️ No changes to commit or branch is protected."
-
-      # =====================================================================
-      # NOTIFICATIONS
-      # =====================================================================
-
-      - name: 🎉 Create success comment
-        if: github.event_name == 'pull_request' && success()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `✅ **Validation Passed**\n\n- Items Processed: ${{ steps.validate.outputs.items_processed }}\n- Results: [validation-results-${{ github.run_number }}](../../actions/runs/${{ github.run_id }})`
-            })
-
-      - name: ❌ Create failure comment
-        if: github.event_name == 'pull_request' && failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `❌ **Validation Failed**\n\nCheck [logs](../../actions/runs/${{ github.run_id }}) for details.`
-            })
-
-      - name: 📧 Notify on failure
-        if: failure()
-        run: |
-          echo "::error::Validation failed"
-          echo "::warning::Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # =========================================================================
   # REPORTING JOB
