@@ -58,38 +58,35 @@ def load_agent_instructions(agent_file: str) -> str:
         log.warning(f"Agent instructions not found: {path}")
         return ""
 
-# ── Naming convention rules (also defined in agents/agent3_validator.md) ───────
+# ── Naming convention rules (Synchronized with naming_rules.json) ──────────────
 NAMING_RULES = """
 PERFUME INVENTORY NAMING CONVENTION:
 - Format: [BRAND] [FRAGRANCE NAME] [TYPE] [SIZE]ML
-- All corrected names must be UPPERCASE
-- Type must be one of: EDP, EDT, EDC, PARFUM, COLOGNE, BL
-- Size must be numeric followed by ML (e.g. 100ML, 50ML, 200ML)
-- Gender: M / W / PH / UNISEX
-- All fields should be uppercase, including brand, fragrance, type, and size
-- Use short-form brand normalization: DOLCE & GABBANA or DOLCE AND GABBANA → D&G
-- Do not alter the original employee-entered name in the input CSV. The original value should remain in the CSV output as-is; only write the corrected version to `corrected_name`.
-- Build `remarks` as an audit trail stating what was wrong and what was changed, e.g. "Name corrected: DOLCE & GABBANA → D&G" or "Size corrected: 100 → 100ML".
-- Common corrections: "edp"→"EDP", "edt"→"EDT", "eau de parfum"→"EDP"
-- DO NOT change the BRAND or FRAGRANCE to a different product. If the corrected brand or fragrance
-    would result in a different product than the employee-entered item, set `needs_review = true`
-    and include the remark: "Brand mismatch — manual review".
+- All corrected names must be UPPERCASE — every character in every field must be uppercase
+- Valid Types: EDP, EDT, EDC, PARFUM, COLOGNE
+- Valid Genders (Derived from image specifications): M, W, PH, UNISEX
+- Use short-form brand normalization: 
+    * DOLCE & GABBANA / DOLCE AND GABBANA / DOLCE&GABBANA → D&G
+    * JEAN PAUL GAULTIER → JPG
+    * CAROLINA HERRERA → CH
+- Do not alter the original employee-entered name in the input CSV.
+- Build `remarks` fields as an exact audit trail using standard codes joined by " | ".
 
-VALIDATION TASKS:
-1. Check if name follows the format above
-2. Verify EDP vs EDT is correct based on product data
-3. Verify size/quantity in ML
-4. Determine gender (M/W/PH/UNISEX)
-5. Flag any discrepancies with clear remarks
+PRODUCT TYPE CONSTRAINTS:
+- VIAL: Name MUST end with VIAL. Size MUST be less than 5ML.
+- MINI: Name MUST end with MINI. Size MUST be between 5ML and 12ML (inclusive).
+- MINI SET: Name MUST end with MINI SET. Formatted as [QTY] X [SIZE]ML MINI SET.
+- TESTER: Name MUST end with TESTER.
+- GIFTSET (SAME FRAGRANCE): Do NOT include the words GIFTSET or GIFT SET anywhere. List components with + after fragrance name (e.g. CHANEL NO5 EDP 100ML + 50ML).
+- GIFTSET (DIFFERENT FRAGRANCES): Each component uses SHORT FRAGRANCE NAME + SIZE separated by + (e.g. CH 212 M EDT 100ML + CH 212 W EDP 75ML).
 
-REMARK CODES (use these exactly):
-- "OK" — entry is correct
-- "Name corrected" — brand/fragrance name fixed
-- "Type corrected: X→Y" — e.g. "Type corrected: EDT→EDP"
-- "Size corrected: Xml→Yml" — size was wrong
-- "Gender added" — gender was missing
-- "Not found — manual review" — could not verify
-- Combine with " | " if multiple issues
+COMMON ABBREVIATIONS MAPPING (Case-Insensitive Input Processing):
+- "POUR HOMME" / "POUR FEMME" → "PH"
+- "EAU DE PARFUM" / "edp" → "EDP"
+- "EAU DE TOILETTE" / "edt" → "EDT"
+- "EAU DE COLOGNE" / "edc" → "EDC"
+- "MEN" / "MAN" → "M"
+- "WOMEN" / "WOMAN" → "W"
 """
 
 # ── Load agent instructions at startup ────────────────────────────────────────
@@ -310,18 +307,13 @@ def normalize_corrected_name(corrected_name: str, item: dict) -> str:
 
 
 def brand_matches_original(brand: str, original_entry: str) -> bool:
-    """Heuristic: return True if proposed brand likely matches the original entry.
-
-    Checks for direct substring match, known long-form presence, or abbreviation.
-    Conservative: return False when uncertain so items get manual review.
-    """
+    """Heuristic: return True if proposed brand likely matches the original entry."""
     if not brand:
         return False
     b = brand.strip().upper()
     orig = (original_entry or "").upper()
     if b in orig:
         return True
-    # If original contains a known long-form that maps to the short form, accept it
     known_long_forms = {
         "DOLCE & GABBANA": "D&G",
         "DOLCE AND GABBANA": "D&G",
@@ -331,7 +323,6 @@ def brand_matches_original(brand: str, original_entry: str) -> bool:
     for long_form, short in known_long_forms.items():
         if short == b and (long_form in orig or short in orig):
             return True
-    # Check first token heuristically
     tokens = re.split(r"[\s\-]+", orig)
     if tokens and tokens[0] and tokens[0] in b:
         return True
@@ -361,21 +352,21 @@ def normalize_source_name(source: str) -> str:
 # See: agents/agent2_smart_search.md
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Trusted perfume retailer/reference sites ranked by reliability
 TRUSTED_SITES = [
-    ("jomashop.com",         10),  # Primary — retailer with exact product specs
-    ("fragrancenet.com",      9),  # Major retailer, accurate specs
-    ("sephora.com",           9),  # Authoritative retailer
-    ("nordstrom.com",         9),  # Department store — reliable specs
-    ("macys.com",             8),  # Department store
-    ("bloomingdales.com",     8),  # Department store
-    ("fragrancex.com",        8),  # Fragrance specialist
-    ("perfumania.com",        8),  # Fragrance specialist
-    ("beautycounter.com",     7),  # Beauty retailer
-    ("feelunique.com",        7),  # UK fragrance retailer
-    ("fragrantica.com",       9),  # Community database — very accurate metadata
-    ("basenotes.net",         8),  # Community database — reliable
-    ("parfumo.com",           7),  # Community database
+    ("ebay.com",             10),
+    ("jomashop.com",         9),  
+    ("fragrancenet.com",      9),  
+    ("sephora.com",           9),  
+    ("nordstrom.com",         9),  
+    ("macys.com",             8),  
+    ("bloomingdales.com",     8),  
+    ("fragrancex.com",        8),  
+    ("perfumania.com",        8),  
+    ("beautycounter.com",     7),  
+    ("feelunique.com",        7),  
+    ("fragrantica.com",       9),  
+    ("basenotes.net",         8),  
+    ("parfumo.com",           7),  
 ]
 
 TRUSTED_DOMAINS = {site: score for site, score in TRUSTED_SITES}
@@ -418,13 +409,9 @@ def serper_search_raw(query: str, num: int = 5) -> dict:
 
 
 def parse_serper_results(data: dict) -> list[dict]:
-    """
-    Parse Serper response into a flat list of result dicts,
-    each with: title, url, snippet, trust_score, source_label.
-    """
+    """Parse Serper response into a flat list of result dicts."""
     results = []
 
-    # Knowledge Graph — treat as highest trust if present
     kg = data.get("knowledgeGraph", {})
     if kg.get("title"):
         kg_text = f"Title: {kg['title']}"
@@ -442,7 +429,6 @@ def parse_serper_results(data: dict) -> list[dict]:
             "source_label": "Google Knowledge Graph",
         })
 
-    # Organic results
     for r in data.get("organic", []):
         url = r.get("link", "")
         score = trust_score(url)
@@ -468,17 +454,14 @@ def deduplicate_results(results: list[dict]) -> list[dict]:
 
 
 def format_results_for_llm(results: list[dict], item_name: str) -> str:
-    """
-    Format search results for the LLM with trust scores clearly marked.
-    Sorted by trust score descending so the LLM sees best sources first.
-    """
+    """Format search results for the LLM with trust scores clearly marked."""
     if not results:
         return "No results found from any source."
 
     sorted_results = sorted(results, key=lambda x: x["trust_score"], reverse=True)
     lines = [f"SEARCH RESULTS FOR: {item_name}", ""]
 
-    for i, r in enumerate(sorted_results[:6], 1):  # Top 6 across all sources
+    for i, r in enumerate(sorted_results[:6], 1):  
         trust_label = (
             "★★★ HIGHLY TRUSTED"  if r["trust_score"] >= 9 else
             "★★  TRUSTED"         if r["trust_score"] >= 7 else
@@ -495,18 +478,10 @@ def format_results_for_llm(results: list[dict], item_name: str) -> str:
 
 
 def search_product(item_name: str) -> str:
-    """
-    Multi-source smart search:
-    1. Try Jomashop first (site-specific)
-    2. If not found, search across all trusted fragrance retailers
-    3. Also search Fragrantica for authoritative metadata
-    4. Merge, deduplicate, rank by trust score
-    5. Return formatted summary for LLM validation
-    """
+    """Multi-source smart search strategy."""
     log.info(f"  Searching: {item_name}")
     all_results = []
 
-    # ── Pass 1: Jomashop (primary source) ─────────────────────────────────────
     data = serper_search_raw(f"site:jomashop.com {item_name} perfume")
     jomashop_results = parse_serper_results(data)
     trusted_jomashop = [r for r in jomashop_results if r["trust_score"] >= 8]
@@ -517,7 +492,6 @@ def search_product(item_name: str) -> str:
     else:
         log.info(f"  Jomashop miss — expanding search to trusted retailers")
 
-        # ── Pass 2: Top fragrance retailers ───────────────────────────────────
         retailer_query = (
             f"{item_name} perfume EDP EDT ml "
             f"site:fragrancenet.com OR site:sephora.com OR site:nordstrom.com "
@@ -531,32 +505,24 @@ def search_product(item_name: str) -> str:
             log.info(f"  ✓ Found {len(trusted_retailers)} results from trusted retailers")
             all_results.extend(trusted_retailers)
 
-        # ── Pass 3: Fragrantica + broad search ────────────────────────────────
         broad_data = serper_search_raw(
             f"{item_name} perfume fragrance EDP EDT ml",
             num=5
         )
         broad_results = parse_serper_results(broad_data)
-        # Include Fragrantica (score 9) and any other trusted sites found
         trusted_broad = [r for r in broad_results if r["trust_score"] >= 7]
 
         if trusted_broad:
             log.info(f"  ✓ Found {len(trusted_broad)} results from broad trusted search")
             all_results.extend(trusted_broad)
 
-    # ── If still nothing found, include ALL results regardless of trust ────────
     if not all_results:
         log.warning(f"  No trusted sources found — including all results for manual review")
-        for query in [
-            f"{item_name} perfume",
-            f"{item_name} fragrance",
-        ]:
+        for query in [f"{item_name} perfume", f"{item_name} fragrance"]:
             fallback_data = serper_search_raw(query, num=3)
             all_results.extend(parse_serper_results(fallback_data))
 
-    # ── Deduplicate by domain, keeping highest trust per domain ───────────────
     deduped = deduplicate_results(all_results)
-
     log.info(f"  Total unique sources: {len(deduped)} | "
              f"Top trust: {max((r['trust_score'] for r in deduped), default=0)}")
 
@@ -574,14 +540,10 @@ def validate_with_gemini(item: dict, search_result: str) -> dict:
     model = genai.GenerativeModel(
         model_name="gemini-3.1-flash-lite",
         system_instruction=(
-            "You are a perfume inventory validation assistant. "
-            "Always respond with valid JSON only. No markdown fences, no explanation. "
-            "Follow the validation rules, confidence scoring, and remark codes "
-            "as defined in your agent instructions. "
-            "Do not change the employee-entered item into a different product. "
-            "Do not change the brand or fragrance to a different product; if the corrected brand or "
-            "fragrance would represent a different item, set needs_review = true and include the remark: "
-            "'Brand mismatch — manual review'."
+            "You are a perfume inventory validation assistant. Always respond with valid JSON only. "
+            "No markdown fences, no explanation. Follow naming rules completely and ensure full uppercase output. "
+            "If brand/fragrance would represent a different product entirely, flag needs_review=true with "
+            "'Brand mismatch — manual review' remarks."
         ),
     )
 
@@ -591,40 +553,20 @@ You are validating a perfume inventory entry against online product data.
 NAMING CONVENTION:
 {NAMING_RULES}
 
-SOURCE TRUST HIERARCHY (always prefer higher-trust sources):
-- ★★★ HIGHLY TRUSTED: Jomashop, Sephora, Nordstrom, Fragrantica, Google Knowledge Graph
-- ★★  TRUSTED: FragranceNet, FragranceX, Perfumania, Bloomingdales, Macys
-- ★   MODERATE: Other retail sites
--     UNKNOWN: Blogs, forums, unrecognised sites — use only as last resort
-
-VALIDATION INSTRUCTIONS:
-1. Read ALL search results provided below
-2. Prioritise data from ★★★ HIGHLY TRUSTED sources first
-3. If multiple trusted sources agree → HIGH confidence
-4. If trusted sources conflict → pick majority, note conflict in remarks, MEDIUM confidence
-5. If only unknown/low-trust sources found → flag needs_review = true, LOW confidence
-6. Never guess — if unsure, set needs_review = true
-7. Do not change the product brand or fragrance into a different item. If the search results do not match the employee-entered item, return needs_review = true with remarks "Not found — manual review".
-8. Do not modify the original employee-entered name in the CSV. Only populate `corrected_name` with the validated corrected value.
-9. Do not expand expected short forms. If the employee entered `D&G`, `S FERRAGAMO`, `JPG`, or any other brand short form, keep it as entered.
-10. For gift set items, do not include the words `GIFT SET` or `GIFTSET` in `corrected_name`. Only list the component sizes separated by `+`, but preserve component type tokens such as `EDP`, `EDT`, or `BL` when they are part of the set.
-11. Preserve `BL` for body lotion components in gift set `corrected_name`.
-12. Use the remarks field as an audit trail that states both the wrong value and the corrected value.
-
 EMPLOYEE ENTERED:
 {json.dumps(item, indent=2)}
 
-SEARCH RESULTS (ranked by source trust):
+SEARCH RESULTS:
 {search_result or "No online data found"}
 
 Respond ONLY with valid JSON — no markdown, no explanation:
 {{
-  "corrected_name": "full corrected name per convention",
-  "brand": "brand name",
-  "fragrance": "fragrance name only",
-  "size_ml": "e.g. 100ml",
+  "corrected_name": "FULL CORRECTED NAME PER CONVENTION",
+  "brand": "BRAND NAME",
+  "fragrance": "FRAGRANCE NAME ONLY",
+  "size_ml": "E.G. 100ML",
   "type": "EDP|EDT|EDC|PARFUM|COLOGNE|BL",
-  "gender": "Men|Women|Unisex",
+  "gender": "M|W|PH|UNISEX",
   "source_used": "domain name of the source used for validation",
   "remarks": "use remark codes exactly as specified",
   "confidence": "High|Medium|Low",
@@ -647,7 +589,6 @@ Respond ONLY with valid JSON — no markdown, no explanation:
             elif "Name corrected" not in validation["remarks"]:
                 validation["remarks"] += f" | Name corrected: {corrected_name} → {normalized_name}"
 
-        # Ensure corrected_name includes the validated product type and size if provided.
         if validation.get("corrected_name"):
             corrected_name = validation["corrected_name"].upper()
             required_type = validation.get("type", "").upper()
@@ -670,8 +611,6 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 
         if validation.get("brand"):
             validation["brand"] = normalize_short_forms(validation["brand"].upper(), item)
-            # Brand preservation sanity-check: if the proposed brand does not match the original
-            # entry heuristically, flag for manual review and add a clear remark.
             original_entry = get_item_name(item)
             if not brand_matches_original(validation.get("brand"), original_entry):
                 validation["needs_review"] = True
@@ -682,7 +621,6 @@ Respond ONLY with valid JSON — no markdown, no explanation:
                 elif not existing:
                     validation["remarks"] = bm
 
-        # If the model did not provide a source URL, extract the first URL from the search results.
         if not validation.get("source_url"):
             first_url = extract_first_url(search_result)
             if first_url:
@@ -718,11 +656,11 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 5 — ORCHESTRATOR (calls Agent 2 + Agent 3 per item)
+# STEP 5 — ORCHESTRATOR
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_validation(items: list[dict]) -> list[dict]:
-    """Process all items through the validation pipeline."""
+    """Process all items through the validation pipeline with built-in pacing filters."""
     results = []
     total = len(items)
 
@@ -731,9 +669,13 @@ def run_validation(items: list[dict]) -> list[dict]:
         search_key = get_item_search_key(item)
         log.info(f"[{i}/{total}] Processing: {item_name}")
 
-        # Search (keep GTIN logging, but use name-based search function signature)
         log.info(f"  Searching by GTIN: {search_key}" if search_key and search_key.isdigit() else f"  Searching: {item_name}")
         search_data = search_product(item_name)
+
+        # FIX: Centralized rate limit sleep pacing to strictly maintain ~13 Requests Per Minute
+        # This insulates running processes perfectly from hitting the Free Tier 15 RPM ceiling.
+        log.info("  ⏳ Rate limit pacing injection: Pausing for 4.5 seconds...")
+        time.sleep(4.5)
 
         # Validate
         validation = validate_with_gemini(item, search_data)
@@ -745,9 +687,6 @@ def run_validation(items: list[dict]) -> list[dict]:
             **validation,
         })
 
-        # Rate limit buffer — Serper 100/day, Gemini free tier 15 RPM / 1500/day
-        time.sleep(0.5)
-
     return results
 
 
@@ -757,16 +696,12 @@ def run_validation(items: list[dict]) -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def results_to_csv(results: list[dict]) -> str:
-    """Convert validation results to CSV string, preserving original input fields plus extra metadata."""
+    """Convert validation results to CSV string, preserving original input fields."""
     if not results:
         return ""
 
-    # Preserve original input columns in their original order, then append extra columns.
-    # Filter out empty column names (some CSVs may include a trailing empty header cell).
     original_fields = [f for f in list(results[0].get("original_data", {}).keys()) if f and f.strip()]
-    extra_fields = [
-        "Corrected Name", "Remarks", "Source Used", "Confidence", "Needs Review"
-    ]
+    extra_fields = ["Corrected Name", "Remarks", "Source Used", "Confidence", "Needs Review"]
     fieldnames = original_fields + extra_fields
 
     output = io.StringIO()
@@ -775,10 +710,8 @@ def results_to_csv(results: list[dict]) -> str:
 
     for r in results:
         original = r.get("original_data", {}) or {}
-        # build row with only the preserved original fields (in order)
         row = {k: original.get(k, "") for k in original_fields}
 
-        # Build a hyperlink cell for the source if we have a URL + domain
         source_domain = r.get("source_used") or r.get("source_domain") or ""
         source_url = r.get("source_url") or ""
         source_field = ""
@@ -790,7 +723,6 @@ def results_to_csv(results: list[dict]) -> str:
 
         label = normalize_source_name(source_domain) or normalize_source_name(source_url) or source_url
         if source_url:
-            # Excel/Sheets-friendly HYPERLINK formula
             safe_url = source_url.replace('"', '""')
             safe_label = label.replace('"', '""')
             source_field = f'=HYPERLINK("{safe_url}", "{safe_label}")'
@@ -822,13 +754,7 @@ def compute_stats(results: list[dict]) -> dict:
     }
 
 
-def send_email_with_attachment(
-    to: str,
-    subject: str,
-    body: str,
-    csv_content: str,
-    filename: str,
-):
+def send_email_with_attachment(to: str, subject: str, body: str, csv_content: str, filename: str):
     """Send email via Gmail SMTP with CSV attachment."""
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -842,12 +768,12 @@ def send_email_with_attachment(
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
-    # Attach CSV
-    part = MIMEBase("application", "octet-stream")
-    part.set_payload(csv_content.encode("utf-8"))
-    encoders.encode_base64(part)
-    part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
-    msg.attach(part)
+    if csv_content:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(csv_content.encode("utf-8"))
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+        msg.attach(part)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
@@ -856,23 +782,14 @@ def send_email_with_attachment(
     log.info(f"Email sent to {to}")
 
 
-def send_results(
-    original_subject: str,
-    original_sender: str,
-    results: list[dict],
-    csv_content: str,
-):
+def send_results(original_subject: str, original_sender: str, results: list[dict], csv_content: str):
     """Send validation results back via email."""
     stats = compute_stats(results)
     date_str = datetime.now().strftime("%Y-%m-%d")
     filename = f"validated_inventory_{date_str}.csv"
 
-    # Determine recipient: reply to sender, also notify main user
     recipients = list({original_sender, NOTIFY_EMAIL} - {""})
-
-    review_list = "\n".join(
-        f"  • {item}" for item in stats["review_items"]
-    ) or "  None — all items verified or auto-corrected."
+    review_list = "\n".join(f"  • {item}" for item in stats["review_items"]) or "  None — all items verified or auto-corrected."
 
     body = f"""Hi,
 
@@ -933,22 +850,16 @@ def main():
     log.info("PERFUME INVENTORY VALIDATOR — STARTING")
     log.info(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
     log.info("=" * 60)
-    log.info(f"Agent 1 instructions loaded: {bool(AGENT1_INSTRUCTIONS)}")
-    log.info(f"Agent 2 instructions loaded: {bool(AGENT2_INSTRUCTIONS)}")
-    log.info(f"Agent 3 instructions loaded: {bool(AGENT3_INSTRUCTIONS)}")
-    log.info(f"Agent 4 instructions loaded: {bool(AGENT4_INSTRUCTIONS)}")
 
-    # ── Step 1: Fetch email ──────────────────────────────────────────────────
     csv_text, subject, sender = fetch_inventory_email()
 
     if not csv_text:
         log.error("No inventory CSV found. Exiting.")
-        # Send a failure notification
         try:
             send_email_with_attachment(
                 to=NOTIFY_EMAIL,
                 subject="⚠️ Inventory Validator — No Email Found",
-                body="The automated validator ran but could not find an inventory email with a CSV attachment in your inbox.\n\nPlease check that the Friday inventory email was received and has a CSV or Excel attachment.",
+                body="The automated validator ran but could not find an inventory email with a CSV attachment in your inbox.",
                 csv_content="",
                 filename="",
             )
@@ -956,20 +867,15 @@ def main():
             pass
         return
 
-    # ── Step 2: Parse CSV ────────────────────────────────────────────────────
     items = parse_csv(csv_text)
     if not items:
         log.error("CSV parsed but contained no items. Exiting.")
         return
 
-    # ── Step 3+4: Search + Validate ──────────────────────────────────────────
     results = run_validation(items)
-
-    # ── Step 5: Generate output CSV ──────────────────────────────────────────
     csv_output = results_to_csv(results)
     artifact_path = save_csv_artifact(csv_output)
 
-    # ── Step 6: Send email ───────────────────────────────────────────────────
     send_results(
         original_subject=subject or "New Inventory Items",
         original_sender=sender or NOTIFY_EMAIL,
@@ -977,7 +883,6 @@ def main():
         csv_content=csv_output,
     )
 
-    # ── Summary ──────────────────────────────────────────────────────────────
     stats = compute_stats(results)
     log.info("=" * 60)
     log.info("VALIDATION COMPLETE")
@@ -988,7 +893,6 @@ def main():
     log.info(f"  Output    : {artifact_path}")
     log.info("=" * 60)
 
-    # Exit with error code if any items need review (alerts GitHub Actions)
     if stats["review"] > 0:
         log.warning(f"{stats['review']} items need manual review — check the email.")
 
