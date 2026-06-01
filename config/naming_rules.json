@@ -1,15 +1,85 @@
 {
   "_comment": "Edit this file to update your company's naming convention rules. No code changes needed.",
 
-  "naming_format": "[Brand] [Fragrance Name] [Size]ml [Type]",
+  "naming_format": "[BRAND] [FRAGRANCE NAME] [TYPE] [SIZE]ML",
+  "name_case": "ALL UPPERCASE — every character in every field must be uppercase",
 
-  "valid_types": ["EDP", "EDT", "EDC", "Parfum", "Cologne"],
+  "valid_types": ["EDP", "EDT", "EDC", "PARFUM", "COLOGNE"],
 
-  "valid_genders": ["Men", "Women", "Unisex"],
+  "valid_genders": ["M", "W", "PH", "UNISEX"],
 
-  "size_format": "Numeric followed by ml — e.g. 100ml, 50ml, 75ml, 200ml",
+  "product_types": {
+    "Standard": {
+      "format": "[BRAND] [FRAGRANCE NAME] [TYPE] [SIZE]ML",
+      "examples": [
+        "CHANEL BLEU DE CHANEL EDP 100ML",
+        "DIOR SAUVAGE EDT 75ML",
+        "YSL BLACK OPIUM EDP 90ML"
+      ]
+    },
+    "Vial": {
+      "name_must_end_with": "VIAL",
+      "size_range": "less than 5ml",
+      "size_max_exclusive": 5,
+      "examples": [
+        "CHANEL NO5 EDP 2ML VIAL", 
+        "DIOR SAUVAGE EDT 1.5ML VIAL"
+      ]
+    },
+    "Mini": {
+      "name_must_end_with": "MINI",
+      "size_range": "5ml to 12ml",
+      "size_min_inclusive": 5,
+      "size_max_inclusive": 12,
+      "examples": [
+        "CHANEL BLEU EDP 10ML MINI", 
+        "YSL BLACK OPIUM EDP 7.5ML MINI"
+      ]
+    },
+    "Mini set": {
+      "rule": "MUST END WITH 'MINI SET' AND ALL CHARACTERS MUST BE IN UPPER CASE",
+      "examples": [
+        "JPG LE MALE EDT 4 X 7ML MINI SET",
+        "DIOR SAUVAGE EDT 3 X 10ML MINI SET"
+      ]
+    },
+    "Tester": {
+      "name_must_end_with": "TESTER",
+      "examples": [
+        "CREED AVENTUS EDP 100ML TESTER", 
+        "VERSACE EROS EDT 100ML TESTER",
+        "AB HER GOLDEN SECRET EDT 80ML TESTER"
+      ]
+    },
+    "Giftset — Same Fragrance": {
+      "rule": "Do NOT use word 'giftset' or 'gift set' in name — only expand component sizes with +",
+      "size_format": "must list all component sizes separated by + after the fragrance name",
+      "examples": [
+        "CHANEL NO5 EDP 100ML + 50ML", 
+        "DIOR SAUVAGE EDP 100ML + 10ML + 50ML"
+      ]
+    },
+    "Giftset — Different Fragrances": {
+      "rule": "Do NOT use word 'giftset' or 'gift set' in name — component structure requires short fragrance name + size",
+      "size_format": "must list each distinct component separated by +",
+      "examples": [
+        "CH 212 M EDT 100ML + CH 212 W EDP 75ML",
+        "D&G LIGHT BLUE M EDT 75ML + D&G LIGHT BLUE W EDT 50ML"
+      ]
+    }
+  },
 
-  "capitalization": "Brand names must be properly capitalized",
+  "size_format": "Numeric followed by ML — e.g. 100ML, 50ML, 75ML, 200ML. Always uppercase.",
+
+  "capitalization": "ALL fields must be UPPERCASE — brand, fragrance name, type, size, suffix",
+
+  "brand_abbreviations": {
+    "DOLCE & GABBANA": "D&G",
+    "DOLCE AND GABBANA": "D&G",
+    "DOLCE&GABBANA": "D&G",
+    "JEAN PAUL GAULTIER": "JPG",
+    "CAROLINA HERRERA": "CH"
+  },
 
   "common_corrections": {
     "edp": "EDP",
@@ -18,16 +88,41 @@
     "eau de parfum": "EDP",
     "eau de toilette": "EDT",
     "eau de cologne": "EDC",
-    "parfum": "Parfum",
-    "cologne": "Cologne"
+    "parfum": "PARFUM",
+    "cologne": "COLOGNE"
+  },
+
+  "common_abbreviations": {
+    "_comment": "Derived strictly from target validation key reference 'image_30ab3d.png'",
+    "POUR HOMME": "PH",
+    "POUR FEMME": "PH",
+    "EAU DE PARFUM": "EDP",
+    "EAU DE COLOGNE": "EDC",
+    "EAU DE TOILETTE": "EDT",
+    "FOR MEN": "FOR MEN",
+    "FOR WOMEN": "FOR WOMEN",
+    "MEN": "M",
+    "WOMEN": "W",
+    "MAN": "M",
+    "WOMAN": "W",
+    "FOR MAN": "FOR MAN",
+    "FOR WOMAN": "FOR WOMAN",
+    "PARFUM": "PARFUM"
   },
 
   "remark_codes": {
     "OK": "Entry is correct, no changes needed",
-    "Name corrected": "Brand or fragrance name was fixed",
+    "Name corrected": "Brand or fragrance name was wrong or lowercase",
     "Type corrected: X→Y": "EDP/EDT type was wrong — e.g. Type corrected: EDT→EDP",
-    "Size corrected: Xml→Yml": "Size/quantity was wrong — e.g. Size corrected: 100ml→50ml",
-    "Gender added": "Gender was missing and has been determined",
+    "Size corrected: XML→YML": "Size/quantity was wrong or missing ML — e.g. Size corrected: 100ML→50ML",
+    "Gender added": "Gender was missing and has been determined from source",
+    "Vial name corrected": "Vial name does not end with 'VIAL'",
+    "Vial size invalid": "Vial size must be less than 5ML",
+    "Mini name corrected": "Mini name does not end with 'MINI'",
+    "Mini size invalid": "Mini size must be between 5ML and 12ML",
+    "Mini set name corrected": "Mini set name did not end with 'MINI SET'",
+    "Tester name corrected": "Tester name does not end with 'TESTER'",
+    "Giftset format corrected": "Giftset must remove 'giftset/gift set' and list component sizes with + (e.g., 100ML + 50ML)",
     "Not found — manual review": "Product could not be verified online"
   },
 
@@ -41,6 +136,5 @@
   ],
 
   "search_target_site": "jomashop.com",
-
-  "search_fallback": "general web search for fragrance details"
+  "search_fallback": "fragrancenet.com, sephora.com, nordstrom.com, fragrantica.com"
 }

@@ -1,0 +1,86 @@
+name: Perfume Validator
+
+on:
+  # Manual trigger via GitHub UI
+  workflow_dispatch:
+    inputs:
+      csv_file:
+        description: 'Path to CSV file in repo (e.g., data/items.csv)'
+        required: true
+        default: 'data/items.csv'
+      max_items:
+        description: 'Max items to process (0 for all)'
+        required: false
+        default: '0'
+
+  # Auto-trigger on CSV changes
+  push:
+    branches: [main]
+    paths:
+      - 'data/**/*.csv'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run validator
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+        run: |
+          python3 scripts/test_local.py ${{ github.event.inputs.csv_file || 'data/items.csv' }} \
+            --max-items ${{ github.event.inputs.max_items || '0' }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: validation-results
+          path: output/test_output.csv
+          retention-days: 30
+
+      - name: Commit results back to repo
+        if: github.event_name == 'push'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add output/test_output.csv
+          git commit -m "✅ Auto-validation: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
+          git push
+
+      - name: Create release with results
+        if: github.event_name == 'push' && success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: validation-${{ github.run_number }}
+          release_name: Validation Results #${{ github.run_number }}
+          body: |
+            ✅ Validation completed successfully
+            
+            **Results:** See attached CSV file
+            **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          draft: false
+          prerelease: false
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Validation failed"
+          echo "Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

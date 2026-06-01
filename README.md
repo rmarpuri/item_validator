@@ -1,222 +1,337 @@
 # 🧴 Perfume Inventory Validator
 
-Automated AI agent that runs every Friday to validate new perfume inventory entries from Gmail.
+Automated perfume product validation using Gemini AI and Serper search. Validate product names, brands, sizes, and types against online sources.
 
-**Pipeline:**
+**How it works:**
 ```
-Gmail Inbox → CSV Attachment → Serper Search (Jomashop) → Claude Haiku Validation → Email Reply + CSV Output
-```
-
----
-
-## 📁 Project Structure
-
-```
-perfume-validator/
-├── .github/
-│   └── workflows/
-│       └── friday-validator.yml   ← GitHub Actions scheduler
-├── src/
-│   └── validator.py               ← Core agent logic
-├── scripts/
-│   └── test_local.py              ← Local test runner
-├── config/
-│   └── naming_rules.json          ← Edit naming convention here
-├── output/                        ← Generated CSVs (gitignored)
-├── requirements.txt
-└── README.md
+CSV File → Serper Search → Gemini Validation → Validated CSV Output
 ```
 
 ---
 
-## ⚙️ One-Time Setup
+## 🚀 Quick Start
 
-### Step 1 — Create GitHub Repository
+### Option 1: Local CLI (Manual)
 
-```bash
-git init perfume-validator
-cd perfume-validator
-# Copy all these files in
-git add .
-git commit -m "Initial setup"
-git remote add origin https://github.com/YOUR_USERNAME/perfume-validator.git
-git push -u origin main
-```
-
-### Step 2 — Get Your API Keys
-
-| Key | Where to get it | Free tier |
-|-----|----------------|-----------|
-| `ANTHROPIC_API_KEY` | console.anthropic.com | Pay per use (~$1-2/month) |
-| `SERPER_API_KEY` | serper.dev | 100 searches/day free |
-| `GMAIL_APP_PASSWORD` | See below | Free |
-| `GMAIL_USER` | Your Gmail address | Free |
-| `NOTIFY_EMAIL` | Email to receive results | — |
-
-### Step 3 — Create Gmail App Password
-
-> Required because Google blocks direct password login for scripts.
-
-1. Go to **myaccount.google.com**
-2. Click **Security** → **2-Step Verification** (enable if not already)
-3. Scroll down → **App passwords**
-4. Select **Mail** + **Other (custom name)** → name it "Inventory Validator"
-5. Copy the 16-character password shown — this is your `GMAIL_APP_PASSWORD`
-
-### Step 4 — Add Secrets to GitHub
-
-1. Go to your GitHub repo → **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret** for each:
-
-| Secret Name | Value |
-|-------------|-------|
-| `ANTHROPIC_API_KEY` | `sk-ant-api03-...` |
-| `SERPER_API_KEY` | Your Serper key |
-| `GMAIL_USER` | `yourname@gmail.com` |
-| `GMAIL_APP_PASSWORD` | The 16-char app password |
-| `NOTIFY_EMAIL` | Email to receive results |
-
-### Step 5 — Enable Gmail IMAP
-
-1. Open Gmail → **Settings** (gear icon) → **See all settings**
-2. Click **Forwarding and POP/IMAP** tab
-3. Under IMAP Access → **Enable IMAP**
-4. Save changes
-
----
-
-## 🚀 Running the Validator
-
-### Automatic (Every Friday 9 AM UTC)
-Just push to GitHub — the workflow runs automatically every Friday.
-
-To change the time, edit `.github/workflows/friday-validator.yml`:
-```yaml
-- cron: "0 9 * * 5"   # 9:00 AM UTC every Friday
-- cron: "0 2 * * 5"   # 2:00 AM UTC (= 10 AM SGT)
-- cron: "0 1 * * 5"   # 1:00 AM UTC (= 9 AM SGT)
-```
-
-[Cron time converter](https://crontab.guru/)
-
-### Manual Trigger
-1. Go to GitHub repo → **Actions** tab
-2. Click **Perfume Inventory Validator**
-3. Click **Run workflow** → **Run workflow**
-
-### Local Test (before deploying)
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
 # Set API keys
-export ANTHROPIC_API_KEY=sk-ant-...
-export SERPER_API_KEY=abc123...
+export GEMINI_API_KEY="your-key"
+export SERPER_API_KEY="your-key"
 
-# Run test with sample data (no Gmail needed)
-python scripts/test_local.py
+# Validate CSV
+python scripts/test_local.py ~/Downloads/items.csv --max-items 10
+```
 
-# Check output
-cat output/test_output.csv
+**Output:** Results saved to `output/test_output.csv`
+
+---
+
+### Option 2: GitHub Actions (Automated)
+
+1. **Create GitHub repo** (https://github.com/new)
+2. **Push code:**
+   ```bash
+   git init
+   git remote add origin https://github.com/YOUR_USERNAME/item_validator.git
+   git add .
+   git commit -m "Initial commit"
+   git push -u origin main
+   ```
+
+3. **Add GitHub Secrets:**
+   - Go to **Settings → Secrets and variables → Actions**
+   - Add `GEMINI_API_KEY`
+   - Add `SERPER_API_KEY`
+
+4. **Trigger validation:**
+   - **Option A:** Push CSV to `data/` folder → Auto-triggers
+   - **Option B:** Manual trigger in **Actions** tab
+   - **Option C:** Scheduled daily (edit `.github/workflows/validate.yml`)
+
+5. **Get results:**
+   - Check **Actions** tab → Artifacts
+   - Auto-committed to `output/test_output.csv`
+   - Available in **Releases**
+
+---
+
+## 📋 CSV Input Format
+
+Required columns (any naming convention supported):
+- **Description/Name/Item** - Product name
+- **GTIN/EAN/UPC** - Product barcode (optional, used for search)
+
+Example:
+```csv
+Description,GTIN,Quantity
+CHANEL N°5 EDP 100ML,3145891260504,5
+DIOR SAUVAGE EDT 75ML,3348901247205,3
 ```
 
 ---
 
-## 📧 How the Email Trigger Works
+## 📊 CSV Output Columns
 
-The validator searches your Gmail inbox for the most recent email with any of these keywords in the subject:
-- `inventory`
-- `new items`
-- `fragrance`
-- `perfume`
-- `stock`
-- `weekly items`
-
-The email must have a **CSV or Excel (.xlsx/.xls) attachment**.
-
-Edit keywords in `config/naming_rules.json` under `email_search_keywords`.
+| Column | Example | Notes |
+|--------|---------|-------|
+| **Description** | (original CSV) | Original input |
+| **Corrected Name** | CHANEL N°5 EDP 100ML | Validated & standardized |
+| **Brand** | CHANEL | Extracted brand |
+| **Fragrance** | N°5 | Fragrance name only |
+| **Size (ML)** | 100ML | Standardized size |
+| **Type** | EDP | Eau de Parfum |
+| **Gender** | W | M/W/Unisex |
+| **Source Used** | Jomashop | Source of validation |
+| **Confidence** | High/Medium/Low | Validation confidence |
+| **Remarks** | Name corrected | What changed |
+| **Needs Review** | YES/NO | Manual review flag |
 
 ---
 
-## 📊 Output
+## ⚙️ Configuration
 
-### Validated CSV columns:
-| Column | Description |
-|--------|-------------|
-| Original Entry | What the employee typed |
-| Corrected Name | Fixed name per convention |
-| Brand | Brand name |
-| Fragrance | Fragrance name |
-| Size | Size in ml |
-| Type | EDP / EDT / EDC / etc. |
-| Gender | Men / Women / Unisex |
-| Remarks | What was changed (or OK) |
-| Confidence | High / Medium / Low |
-| Needs Review | YES / NO |
+### Naming Rules
+Edit `config/naming_rules.json` to customize:
+- Brand abbreviations (D&G, S FERRAGAMO, etc.)
+- Fragrance type standards
+- Gender markers
+- Product categories
 
-### Email summary sent every Friday:
+### Environment Variables
+```bash
+export GEMINI_API_KEY="..."      # Gemini API key
+export SERPER_API_KEY="..."      # Serper search API key
 ```
-VALIDATION SUMMARY — 2026-01-10
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Total items processed : 45
-✅ Verified OK        : 28
-⚠️  Auto-corrected    : 14
-🔴 Needs manual review:  3
 
-Items requiring manual review:
-  • Unknown Brand XYZ 50ml
-  • ...
+Or create `.env` file:
+```
+GEMINI_API_KEY=...
+SERPER_API_KEY=...
 ```
 
 ---
 
-## 🔧 Customizing Naming Rules
+## 🔧 Project Structure
 
-Edit `config/naming_rules.json` — no code changes needed:
-
-```json
-{
-  "naming_format": "[Brand] [Fragrance Name] [Size]ml [Type]",
-  "valid_types": ["EDP", "EDT", "EDC", "Parfum", "Cologne"],
-  "common_corrections": {
-    "edp": "EDP",
-    "eau de parfum": "EDP"
-  }
-}
+```
+item_validator/
+├── .github/
+│   └── workflows/
+│       └── validate.yml          ← GitHub Actions workflow
+├── src/
+│   └── validator.py              ← Core validation engine
+├── scripts/
+│   └── test_local.py             ← CLI test runner
+├── config/
+│   └── naming_rules.json         ← Naming conventions
+├── data/                         ← CSV input directory
+│   └── items.csv                 ← Your CSV files
+├── output/                       ← Results directory
+│   └── test_output.csv           ← Validated results
+├── agents/                       ← Agent documentation
+├── requirements.txt
+├── .gitignore
+├── .env                          ← Local only (not committed)
+└── README.md
 ```
 
 ---
 
-## 💰 Monthly Cost
+## 📖 Usage Examples
 
-| Service | Cost |
-|---------|------|
-| Claude Haiku (100 items/week) | ~$1–2/month |
-| Serper API (free tier) | $0 |
-| GitHub Actions | $0 |
-| Gmail IMAP | $0 |
-| **Total** | **~$1–2/month** |
+### Validate Single File Locally
+```bash
+python scripts/test_local.py ~/Downloads/items.csv
+```
+
+### Limit to 10 Items (Preview)
+```bash
+python scripts/test_local.py ~/Downloads/items.csv --max-items 10
+```
+
+### Check Validation Output
+```bash
+head -5 output/test_output.csv
+# View results in Excel
+open output/test_output.csv
+```
+
+### Push to GitHub for Automated Processing
+```bash
+# Copy CSV to data folder
+cp ~/Downloads/items.csv data/items.csv
+
+# Commit and push
+git add data/items.csv
+git commit -m "Validate new items"
+git push origin main
+
+# Check GitHub Actions → Results auto-committed
+```
 
 ---
 
-## 🐛 Troubleshooting
+## 🔍 How It Works
 
-**"No inventory email found"**
-→ Check Gmail IMAP is enabled
-→ Check subject contains one of the keywords
-→ Make sure attachment is .csv or .xlsx
+### Step 1: Search (Serper API)
+- Searches by GTIN (if available) or product name
+- Returns results from trusted sources:
+  - Jomashop ⭐⭐⭐
+  - Sephora ⭐⭐⭐
+  - Fragrantica ⭐⭐⭐
+  - FragranceNet ⭐⭐
+  - Other retailers ⭐
 
-**"Serper API error: 401"**
-→ Check `SERPER_API_KEY` secret is correct
+### Step 2: Validate (Gemini AI)
+- Analyzes search results
+- Extracts standardized data
+- Cross-references multiple sources
+- Flags items needing manual review
+- Generates confidence scores
 
-**"Claude API error"**
-→ Check `ANTHROPIC_API_KEY` secret
-→ Check your Anthropic account has credits
+### Step 3: Output
+- Generates CSV with validated data
+- Hyperlinks to source URLs
+- Flags low-confidence items
+- Ready for import to WMS
 
-**"Gmail login failed"**
-→ Use App Password, not your normal Gmail password
-→ Ensure 2FA is enabled on Google account
+---
 
-**Items always show "Low confidence"**
-→ The product may not be on Jomashop
-→ Try broadening the search in `config/naming_rules.json`
+## 🎯 Validation Confidence Levels
+
+| Level | Meaning | Action |
+|-------|---------|--------|
+| **High** | Multiple trusted sources agree | Auto-accept |
+| **Medium** | Some sources conflict | Review recommended |
+| **Low** | Only unknown sources found | Manual review required |
+
+Items flagged "Needs Review: YES" should be checked before import.
+
+---
+
+## 🚨 Troubleshooting
+
+### "API key not found"
+```bash
+# Check environment variables
+echo $GEMINI_API_KEY
+echo $SERPER_API_KEY
+
+# If empty, set them
+export GEMINI_API_KEY="your-key"
+export SERPER_API_KEY="your-key"
+
+# Or create .env file
+echo "GEMINI_API_KEY=your-key" > .env
+echo "SERPER_API_KEY=your-key" >> .env
+```
+
+### GitHub Actions Workflow Fails
+1. Go to **Actions** tab → Failed run
+2. Expand logs
+3. Check for:
+   - Missing API secrets
+   - CSV file not found (must be in `data/` folder)
+   - API quota exceeded
+
+### CSV Not Processing
+- Ensure file is at `data/items.csv`
+- Verify CSV has proper headers
+- Check file is valid UTF-8 encoding
+
+### Slow Processing
+- Large files (100+ items) may take 3-5 minutes
+- Check API rate limits at Gemini/Serper dashboards
+- Use `--max-items` to process in batches
+
+---
+
+## 📊 Performance
+
+| File Size | Estimated Time |
+|-----------|-----------------|
+| 1-10 items | 30-60 seconds |
+| 10-50 items | 1-2 minutes |
+| 50-100 items | 2-3 minutes |
+| 100+ items | 3-5+ minutes |
+
+**Tips:**
+- Start with small test files
+- Monitor API quotas
+- Use Preview mode for testing
+
+---
+
+## 🔐 Security
+
+- ✅ API keys stored as GitHub Secrets (encrypted)
+- ✅ Never committed to repository
+- ✅ Use `.env` locally (in `.gitignore`)
+- ✅ Regenerate keys if accidentally exposed
+
+---
+
+## 📝 API Keys
+
+### Gemini API
+1. Visit https://aistudio.google.com/app/apikey
+2. Click **Create API Key**
+3. Copy key
+4. Add to GitHub Secrets: `GEMINI_API_KEY`
+
+**Free tier:** 1,500 requests/day
+
+### Serper API
+1. Visit https://serper.dev/signup
+2. Sign up and verify email
+3. Go to Dashboard → API Key
+4. Copy key
+5. Add to GitHub Secrets: `SERPER_API_KEY`
+
+**Free tier:** 100 searches/month
+
+---
+
+## 📚 Documentation
+
+- **[GitHub Actions Setup](GITHUB_ACTIONS_SETUP.md)** - Detailed CI/CD guide
+- **[Naming Rules](config/naming_rules.json)** - Customization options
+- **[Agent Instructions](agents/)** - AI validation rules
+
+---
+
+## 🤝 Contributing
+
+To improve validation:
+1. Edit `config/naming_rules.json` for naming standards
+2. Edit `agents/agent3_validator.md` for validation rules
+3. Test locally: `python scripts/test_local.py`
+4. Push changes to trigger GitHub Actions
+
+---
+
+## 📄 License
+
+MIT
+
+---
+
+## Support
+
+For issues:
+1. Check **Troubleshooting** section above
+2. Review GitHub Actions logs
+3. Verify API quotas
+4. Check `.gitignore` includes `.env`
+
+---
+
+**Ready to validate?**
+
+```bash
+# Local: python scripts/test_local.py data/items.csv
+# GitHub: Push CSV to data/ folder & watch Actions tab
+```
