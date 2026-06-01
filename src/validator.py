@@ -2,12 +2,6 @@
 Perfume Inventory Validator — Orchestrator
 Runs every Friday via GitHub Actions.
 
-Agents:
-  Agent 1 — Email Reader     (agents/agent1_email_reader.md)
-  Agent 2 — Smart Search     (agents/agent2_smart_search.md)
-  Agent 3 — Validator        (agents/agent3_validator.md)
-  Agent 4 — Output           (agents/agent4_output.md)
-
 Pipeline: Gmail → Parse CSV → Serper Search → Gemini 3.1 Flash Lite Validate → Email Reply + CSV
 """
 
@@ -41,22 +35,10 @@ log = logging.getLogger(__name__)
 # ── Config from environment ────────────────────────────────────────────────────
 GEMINI_API_KEY    = os.environ["GEMINI_API_KEY"]
 SERPER_API_KEY    = os.environ["SERPER_API_KEY"]
-GMAIL_USER        = os.environ["GMAIL_USER"]          # your.email@company.com
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"] # Gmail App Password (not login password)
+GMAIL_USER        = os.environ["GMAIL_USER"]          
+GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"] 
 NOTIFY_EMAIL      = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
 CSV_FIELDNAMES   = []
-
-# ── Agent instruction loader ──────────────────────────────────────────────────
-def load_agent_instructions(agent_file: str) -> str:
-    """Load agent instruction markdown from agents/ folder."""
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(base, "agents", agent_file)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        log.warning(f"Agent instructions not found: {path}")
-        return ""
 
 # ── Naming convention rules (Synchronized with naming_rules.json) ──────────────
 NAMING_RULES = """
@@ -64,13 +46,12 @@ PERFUME INVENTORY NAMING CONVENTION:
 - Format: [BRAND] [FRAGRANCE NAME] [TYPE] [SIZE]ML
 - All corrected names must be UPPERCASE — every character in every field must be uppercase
 - Valid Types: EDP, EDT, EDC, PARFUM, COLOGNE
-- Valid Genders (Derived from image specifications): M, W, PH, UNISEX
+- Valid Genders: M, W, PH, UNISEX
 - Use short-form brand normalization: 
     * DOLCE & GABBANA / DOLCE AND GABBANA / DOLCE&GABBANA → D&G
     * JEAN PAUL GAULTIER → JPG
     * CAROLINA HERRERA → CH
 - Do not alter the original employee-entered name in the input CSV.
-- Build `remarks` fields as an exact audit trail using standard codes joined by " | ".
 
 PRODUCT TYPE CONSTRAINTS:
 - VIAL: Name MUST end with VIAL. Size MUST be less than 5ML.
@@ -79,24 +60,10 @@ PRODUCT TYPE CONSTRAINTS:
 - TESTER: Name MUST end with TESTER.
 - GIFTSET (SAME FRAGRANCE): Do NOT include the words GIFTSET or GIFT SET anywhere. List components with + after fragrance name (e.g. CHANEL NO5 EDP 100ML + 50ML).
 - GIFTSET (DIFFERENT FRAGRANCES): Each component uses SHORT FRAGRANCE NAME + SIZE separated by + (e.g. CH 212 M EDT 100ML + CH 212 W EDP 75ML).
-
-COMMON ABBREVIATIONS MAPPING (Case-Insensitive Input Processing):
-- "POUR HOMME" / "POUR FEMME" → "PH"
-- "EAU DE PARFUM" / "edp" → "EDP"
-- "EAU DE TOILETTE" / "edt" → "EDT"
-- "EAU DE COLOGNE" / "edc" → "EDC"
-- "MEN" / "MAN" → "M"
-- "WOMEN" / "WOMAN" → "W"
 """
 
-# ── Load agent instructions at startup ────────────────────────────────────────
-AGENT1_INSTRUCTIONS = load_agent_instructions("agent1_email_reader.md")
-AGENT2_INSTRUCTIONS = load_agent_instructions("agent2_smart_search.md")
-AGENT3_INSTRUCTIONS = load_agent_instructions("agent3_validator.md")
-AGENT4_INSTRUCTIONS = load_agent_instructions("agent4_output.md")
-
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — AGENT 1: EMAIL READER
+# STEP 1 — EMAIL READER
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -106,20 +73,12 @@ def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]
     from email.header import decode_header
 
     log.info("Connecting to Gmail via IMAP...")
-
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         mail.select("inbox")
 
-        search_criteria = [
-            '(SUBJECT "inventory")',
-            '(SUBJECT "new items")',
-            '(SUBJECT "fragrance")',
-            '(SUBJECT "perfume")',
-            '(SUBJECT "stock")',
-        ]
-
+        search_criteria = ['(SUBJECT "inventory")', '(SUBJECT "new items")', '(SUBJECT "fragrance")', '(SUBJECT "perfume")', '(SUBJECT "stock")']
         all_ids = []
         for criteria in search_criteria:
             _, data = mail.search(None, criteria)
@@ -151,35 +110,23 @@ def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]
 
             if any(ext in filename.lower() for ext in [".csv", ".xlsx", ".xls"]):
                 payload = part.get_payload(decode=True)
-                log.info(f"Found attachment: {filename}")
-
                 if filename.lower().endswith(".csv"):
                     csv_content = payload.decode("utf-8", errors="replace")
                 elif filename.lower().endswith((".xlsx", ".xls")):
                     csv_content = excel_to_csv(payload)
                 break
-
             elif content_type == "text/plain" and not csv_content:
                 body = part.get_payload(decode=True).decode("utf-8", errors="replace")
                 if "," in body and "\n" in body and len(body.strip().split("\n")) > 2:
                     csv_content = body
-                    log.info("Found inline CSV in email body")
 
         mail.logout()
-
-        if not csv_content:
-            log.warning("Email found but no CSV/Excel attachment detected.")
-            return None, subject, sender
-
         return csv_content, subject, sender
-
     except Exception as e:
         log.error(f"Gmail IMAP error: {e}")
         raise
 
-
 def excel_to_csv(excel_bytes: bytes) -> str:
-    """Convert Excel bytes to CSV string using openpyxl."""
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
     ws = wb.active
@@ -189,204 +136,126 @@ def excel_to_csv(excel_bytes: bytes) -> str:
         writer.writerow([str(v) if v is not None else "" for v in row])
     return output.getvalue()
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — PARSE CSV
 # ══════════════════════════════════════════════════════════════════════════════
 
 def parse_csv(csv_text: str) -> list[dict]:
-    """Parse CSV text into list of dicts."""
     global CSV_FIELDNAMES
     reader = csv.DictReader(io.StringIO(csv_text.strip()))
     CSV_FIELDNAMES = reader.fieldnames or []
-    items = [row for row in reader]
-    log.info(f"Parsed {len(items)} items from CSV")
-    return items
-
+    return [row for row in reader]
 
 def get_item_name(item: dict) -> str:
-    """Extract the product name from a CSV row regardless of column naming."""
     for key in item:
         if any(k in key.lower() for k in ["description", "name", "item", "fragrance"]):
             val = item[key].strip()
-            if val:
-                return val
+            if val: return val
     return next((v.strip() for v in item.values() if v.strip()), "Unknown Item")
 
-
 def get_item_search_key(item: dict) -> str:
-    """Extract the best search key from a CSV row, preferring GTIN."""
     for key in item:
         if any(k in key.lower() for k in ["gtin", "ean", "upc", "barcode"]):
             val = item[key].strip()
-            if val:
-                return val
+            if val: return val
     return get_item_name(item)
 
+def get_input_country_origin(item: dict) -> str:
+    for key in item:
+        if any(k in key.lower() for k in ["origin", "country", "coo"]):
+            val = item[key].strip()
+            if val: return val.upper()
+    return ""
 
 def normalize_short_forms(name: str, item: dict) -> str:
-    """Preserve expected short-form brand abbreviations in corrected names."""
-    if not name:
-        return name
-
+    if not name: return name
     original = get_item_name(item).upper()
     replacements = {
-        "DOLCE & GABBANA": "D&G",
-        "DOLCE AND GABBANA": "D&G",
-        "DOLCE&GABBANA": "D&G",
-        "SALVATORE FERRAGAMO": "S FERRAGAMO",
-        "JEAN PAUL GAULTIER": "JPG",
-        "CAROLINA HERRERA": "CH",
+        "DOLCE & GABBANA": "D&G", "DOLCE AND GABBANA": "D&G", "DOLCE&GABBANA": "D&G",
+        "SALVATORE FERRAGAMO": "S FERRAGAMO", "JEAN PAUL GAULTIER": "JPG", "CAROLINA HERRERA": "CH",
     }
-
-    corrected = name
     for long_form, short_form in replacements.items():
-        if long_form in corrected and short_form in original:
-            corrected = re.sub(rf"\b{re.escape(long_form)}\b", short_form, corrected)
-        elif short_form in original and long_form in corrected:
-            corrected = re.sub(rf"\b{re.escape(long_form)}\b", short_form, corrected)
-        elif short_form in corrected and long_form in original:
-            corrected = re.sub(rf"\b{re.escape(long_form)}\b", short_form, corrected)
-    return corrected
-
+        if long_form in name or short_form in original:
+            name = re.sub(rf"\b{re.escape(long_form)}\b", short_form, name)
+    return name
 
 def is_giftset_name(name: str) -> bool:
-    """Return True for giftset-like product names with multiple component volumes."""
-    if not name:
-        return False
-
+    if not name: return False
     upper = name.upper()
-    if "GIFT SET" in upper or "GIFTSET" in upper:
-        return True
-    if re.search(r"\b\d+\s*PCS\b", upper):
-        return True
-
+    if "GIFT SET" in upper or "GIFTSET" in upper or re.search(r"\b\d+\s*PCS\b", upper): return True
     if "+" in upper:
-        sizes = re.findall(r"\d+(?:\.\d+)?\s*ML\b", upper)
-        return len(sizes) >= 2
-
+        return len(re.findall(r"\d+(?:\.\d+)?\s*ML\b", upper)) >= 2
     return False
 
-
 def normalize_giftset_name(name: str) -> str:
-    """Remove gift set label and keep only the component size details."""
-    if not name:
-        return name
-
+    if not name: return name
     normalized = re.sub(r"\bGIFT\s*SET\b", "", name, flags=re.IGNORECASE)
     normalized = re.sub(r"\bGIFTSET\b", "", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\s*\+\s*", " + ", normalized)
-    normalized = re.sub(r"\s{2,}", " ", normalized)
-    normalized = normalized.strip()
-    normalized = normalized.strip("+").strip()
-    return normalized
-
+    return " ".join(normalized.split()).strip("+ ").strip()
 
 def normalize_corrected_name(corrected_name: str, item: dict) -> str:
-    """Apply final normalization rules to the corrected name."""
-    if not corrected_name:
-        return corrected_name
-
+    if not corrected_name: return corrected_name
     corrected_name = corrected_name.strip().upper()
     corrected_name = normalize_short_forms(corrected_name, item)
-    corrected_name = normalize_giftset_name(corrected_name)
-    return corrected_name
-
+    return normalize_giftset_name(corrected_name)
 
 def brand_matches_original(brand: str, original_entry: str) -> bool:
-    """Heuristic: return True if proposed brand likely matches the original entry."""
-    if not brand:
-        return False
-    b = brand.strip().upper()
-    orig = (original_entry or "").upper()
-    if b in orig:
-        return True
-    known_long_forms = {
-        "DOLCE & GABBANA": "D&G",
-        "DOLCE AND GABBANA": "D&G",
-        "JEAN PAUL GAULTIER": "JPG",
-        "CAROLINA HERRERA": "CH",
-    }
+    if not brand: return False
+    b, orig = brand.strip().upper(), (original_entry or "").upper()
+    if b in orig: return True
+    known_long_forms = {"DOLCE & GABBANA": "D&G", "DOLCE AND GABBANA": "D&G", "JEAN PAUL GAULTIER": "JPG", "CAROLINA HERRERA": "CH"}
     for long_form, short in known_long_forms.items():
-        if short == b and (long_form in orig or short in orig):
-            return True
+        if short == b and (long_form in orig or short in orig): return True
     tokens = re.split(r"[\s\-]+", orig)
-    if tokens and tokens[0] and tokens[0] in b:
-        return True
-    return False
-
+    return bool(tokens and tokens[0] and tokens[0] in b)
 
 def extract_first_url(text: str) -> str:
-    """Return the first HTTP/HTTPS URL found in a search result text."""
-    if not text:
-        return ""
+    if not text: return ""
     match = re.search(r"https?://[^\s\)\]\"]+", text)
     return match.group(0).strip() if match else ""
 
 def normalize_source_name(source: str) -> str:
-    """Normalize domain-based source names for display in the CSV."""
-    if not source:
-        return ""
-    source = source.strip()
-    source = re.sub(r"^https?://", "", source, flags=re.IGNORECASE)
-    source = re.sub(r"^www\.", "", source, flags=re.IGNORECASE)
-    source = source.split("/")[0]
-    source = re.sub(r"\.(com|net|org|io|co|fr|de|uk)$", "", source, flags=re.IGNORECASE)
-    return source
+    if not source: return ""
+    source = re.sub(r"^https?://", "", source.strip(), flags=re.IGNORECASE)
+    source = re.sub(r"^www\.", "", source, flags=re.IGNORECASE).split("/")[0]
+    return re.sub(r"\.(com|net|org|io|co|fr|de|uk)$", "", source, flags=re.IGNORECASE)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 3 — AGENT 2: SMART SEARCH
-# See: agents/agent2_smart_search.md
 # ══════════════════════════════════════════════════════════════════════════════
 
 TRUSTED_SITES = [
-    ("ebay.com",              10),
-    ("jomashop.com",         9),  
-    ("fragrancenet.com",      9),  
-    ("sephora.com",           9),  
-    ("nordstrom.com",         9),  
-    ("macys.com",             8),  
-    ("bloomingdales.com",     8),  
-    ("fragrancex.com",        8),  
-    ("perfumania.com",        8),  
-    ("beautycounter.com",     7),  
-    ("feelunique.com",        7),  
-    ("fragrantica.com",       9),  
-    ("basenotes.net",         8),  
+    ("ebay.com",             10),  
+    ("jomashop.com",          9),  
+    ("fragrancenet.com",      8),  
+    ("sephora.com",           8),  
+    ("nordstrom.com",         8),  
+    ("fragrantica.com",       8),  
+    ("basenotes.net",         7),  
     ("parfumo.com",           7),  
 ]
-
 TRUSTED_DOMAINS = {site: score for site, score in TRUSTED_SITES}
 
-
 def get_domain(url: str) -> str:
-    """Extract base domain from URL."""
     try:
         from urllib.parse import urlparse
-        parsed = urlparse(url)
-        domain = parsed.netloc.lower().replace("www.", "")
-        return domain
+        return urlparse(url).netloc.lower().replace("www.", "")
     except Exception:
         return ""
 
-
 def trust_score(url: str) -> int:
-    """Return trust score for a URL. 0 = unknown site."""
     domain = get_domain(url)
     for trusted_domain, score in TRUSTED_DOMAINS.items():
-        if trusted_domain in domain:
-            return score
+        if trusted_domain in domain: return score
     return 0
 
-
 def serper_search_raw(query: str, num: int = 5) -> dict:
-    """Raw Serper API call — returns full JSON response."""
     try:
         res = requests.post(
             "[https://google.serper.dev/search](https://google.serper.dev/search)",
             headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-            json={"q": query, "num": num},
-            timeout=10,
+            json={"q": query, "num": num}, timeout=10,
         )
         res.raise_for_status()
         return res.json()
@@ -394,157 +263,79 @@ def serper_search_raw(query: str, num: int = 5) -> dict:
         log.warning(f"Serper search error for '{query}': {e}")
         return {}
 
-
 def parse_serper_results(data: dict) -> list[dict]:
-    """Parse Serper response into a flat list of result dicts."""
     results = []
-
-    kg = data.get("knowledgeGraph", {})
-    if kg.get("title"):
-        kg_text = f"Title: {kg['title']}"
-        if kg.get("type"):
-            kg_text += f" | Type: {kg['type']}"
-        if kg.get("description"):
-            kg_text += f" | {kg['description']}"
-        for k, v in (kg.get("attributes") or {}).items():
-            kg_text += f" | {k}: {v}"
-        results.append({
-            "title":        kg.get("title", ""),
-            "url":          kg.get("website", ""),
-            "snippet":      kg_text,
-            "trust_score":  10,
-            "source_label": "Google Knowledge Graph",
-        })
-
     for r in data.get("organic", []):
         url = r.get("link", "")
-        score = trust_score(url)
         results.append({
             "title":        r.get("title", ""),
             "url":          url,
             "snippet":      r.get("snippet", ""),
-            "trust_score":  score,
+            "trust_score":  trust_score(url),
             "source_label": get_domain(url) or "unknown",
         })
-
     return results
 
+def format_results_for_llm(results: list[dict], item_name: str) -> str:
+    if not results: return "No results found from any source."
+    sorted_results = sorted(results, key=lambda x: x["trust_score"], reverse=True)
+    lines = [f"SEARCH RESULTS FOR: {item_name}", ""]
+    for i, r in enumerate(sorted_results[:6], 1):  
+        lines.append(f"[{i}] {r['title']}\n    Source : {r['source_label']} [Trust: {r['trust_score']}]\n    URL    : {r['url']}\n    Info   : {r['snippet']}\n")
+    return "\n".join(lines)
+
+def search_product(item_name: str) -> str:
+    all_results = []
+
+    ebay_data = serper_search_raw(f"site:ebay.com {item_name} perfume")
+    ebay_results = [r for r in parse_serper_results(ebay_data) if r["trust_score"] == 10]
+    if ebay_results:
+        log.info(f"  ✓ Found {len(ebay_results)} authoritative records on eBay")
+        all_results.extend(ebay_results)
+
+    joma_data = serper_search_raw(f"site:jomashop.com {item_name} perfume")
+    joma_results = [r for r in parse_serper_results(joma_data) if r["trust_score"] == 9]
+    if joma_results:
+        log.info(f"  ✓ Found {len(joma_results)} fallback records on Jomashop")
+        all_results.extend(joma_results)
+
+    if not all_results:
+        broad_data = serper_search_raw(f"{item_name} perfume fragrance EDP EDT ml", num=5)
+        all_results.extend(parse_serper_results(broad_data))
+
+    return format_results_for_llm(deduplicate_results(all_results), item_name)
 
 def deduplicate_results(results: list[dict]) -> list[dict]:
-    """Remove near-duplicate results by domain, keeping highest trust."""
     seen_domains = {}
     for r in sorted(results, key=lambda x: x["trust_score"], reverse=True):
         domain = get_domain(r["url"]) or r["source_label"]
-        if domain not in seen_domains:
-            seen_domains[domain] = r
+        if domain not in seen_domains: seen_domains[domain] = r
     return list(seen_domains.values())
 
-
-def format_results_for_llm(results: list[dict], item_name: str) -> str:
-    """Format search results for the LLM with trust scores clearly marked."""
-    if not results:
-        return "No results found from any source."
-
-    sorted_results = sorted(results, key=lambda x: x["trust_score"], reverse=True)
-    lines = [f"SEARCH RESULTS FOR: {item_name}", ""]
-
-    for i, r in enumerate(sorted_results[:6], 1):  
-        trust_label = (
-            "★★★ HIGHLY TRUSTED"  if r["trust_score"] >= 9 else
-            "★★  TRUSTED"         if r["trust_score"] >= 7 else
-            "★   MODERATE"        if r["trust_score"] >= 4 else
-            "    UNKNOWN SOURCE"
-        )
-        lines.append(f"[{i}] {r['title']}")
-        lines.append(f"    Source : {r['source_label']}  [{trust_label}]")
-        lines.append(f"    URL    : {r['url']}")
-        lines.append(f"    Info   : {r['snippet'][:200]}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def search_product(item_name: str) -> str:
-    """Multi-source smart search strategy."""
-    log.info(f"  Searching: {item_name}")
-    all_results = []
-
-    data = serper_search_raw(f"site:jomashop.com {item_name} perfume")
-    jomashop_results = parse_serper_results(data)
-    trusted_jomashop = [r for r in jomashop_results if r["trust_score"] >= 8]
-
-    if trusted_jomashop:
-        log.info(f"  ✓ Found {len(trusted_jomashop)} results on Jomashop")
-        all_results.extend(trusted_jomashop)
-    else:
-        log.info(f"  Jomashop miss — expanding search to trusted retailers")
-
-        retailer_query = (
-            f"{item_name} perfume EDP EDT ml "
-            f"site:fragrancenet.com OR site:sephora.com OR site:nordstrom.com "
-            f"OR site:fragrancex.com OR site:perfumania.com"
-        )
-        data2 = serper_search_raw(retailer_query, num=5)
-        retailer_results = parse_serper_results(data2)
-        trusted_retailers = [r for r in retailer_results if r["trust_score"] >= 7]
-
-        if trusted_retailers:
-            log.info(f"  ✓ Found {len(trusted_retailers)} results from trusted retailers")
-            all_results.extend(trusted_retailers)
-
-        broad_data = serper_search_raw(
-            f"{item_name} perfume fragrance EDP EDT ml",
-            num=5
-        )
-        broad_results = parse_serper_results(broad_data)
-        trusted_broad = [r for r in broad_results if r["trust_score"] >= 7]
-
-        if trusted_broad:
-            log.info(f"  ✓ Found {len(trusted_broad)} results from broad trusted search")
-            all_results.extend(trusted_broad)
-
-    if not all_results:
-        log.warning(f"  No trusted sources found — including all results for manual review")
-        for query in [f"{item_name} perfume", f"{item_name} fragrance"]:
-            fallback_data = serper_search_raw(query, num=3)
-            all_results.extend(parse_serper_results(fallback_data))
-
-    deduped = deduplicate_results(all_results)
-    log.info(f"  Total unique sources: {len(deduped)} | "
-             f"Top trust: {max((r['trust_score'] for r in deduped), default=0)}")
-
-    return format_results_for_llm(deduped, item_name)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — AGENT 3: VALIDATOR (Gemini 3.1 Flash Lite with Exponential Backoff)
-# See: agents/agent3_validator.md
+# STEP 4 — AGENT 3: VALIDATOR (Adaptive Quota Control Guard)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def validate_with_gemini_with_retry(item: dict, search_result: str, max_retries: int = 5) -> dict:
-    """Wraps Gemini API execution inside an adaptive error-handling retry loop."""
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(
         model_name="gemini-3.1-flash-lite",
         system_instruction=(
-            "You are a perfume inventory validation assistant. Always respond with valid JSON only. "
-            "No markdown fences, no explanation. Follow naming rules completely and ensure full uppercase output. "
-            "If brand/fragrance would represent a different product entirely, flag needs_review=true with "
-            "'Brand mismatch — manual review' remarks."
+            "You are a perfume validation bot. Return structural JSON only. "
+            "Examine search text payload fields to deduce the country where the fragrance was manufactured. "
+            "Return the two-character ISO code for country of origin in 'country_of_origin' field (e.g., FR, IT, US, ES)."
         ),
     )
 
     prompt = f"""
-You are validating a perfume inventory entry against online product data.
-
 NAMING CONVENTION:
 {NAMING_RULES}
 
 EMPLOYEE ENTERED:
 {json.dumps(item, indent=2)}
 
-SEARCH RESULTS:
-{search_result or "No online data found"}
+SEARCH PAYLOAD TEXT:
+{search_result}
 
 Respond ONLY with valid JSON — no markdown, no explanation:
 {{
@@ -554,399 +345,167 @@ Respond ONLY with valid JSON — no markdown, no explanation:
   "size_ml": "E.G. 100ML",
   "type": "EDP|EDT|EDC|PARFUM|COLOGNE|BL",
   "gender": "M|W|PH|UNISEX",
-  "source_used": "domain name of the source used for validation",
-  "remarks": "use remark codes exactly as specified",
+  "country_of_origin": "ISO 2-letter manufacturing country code deduced from data e.g. FR, IT, US",
+  "source_used": "domain name of validation target",
+  "remarks": "base remark summaries",
   "confidence": "High|Medium|Low",
   "needs_review": false
 }}
 """
-
-    base_delay = 5.0  
+    base_delay = 6.0  
     for attempt in range(1, max_retries + 1):
         try:
             response = model.generate_content(prompt)
-            raw = response.text.strip()
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            validation = json.loads(raw)
-            return validation
-
+            raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+            return json.loads(raw)
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "Quota exceeded" in err_str or "ResourceExhausted" in err_str:
-                wait_seconds = base_delay * (2 ** (attempt - 1)) 
+            err_msg = str(e)
+            if any(k in err_msg for k in ["429", "Quota", "ResourceExhausted"]):
+                wait = base_delay * (2 ** (attempt - 1))
                 
-                match = re.search(r"retry_delay\s*{\s*seconds:\s*(\d+)", err_str)
-                if match:
-                    wait_seconds = float(match.group(1)) + 1.5  
+                match = re.search(r"retry_delay\s*{\s*seconds:\s*(\d+)", err_msg)
+                if match: 
+                    wait = float(match.group(1)) + 2.0
                 else:
-                    match_alt = re.search(r"Please retry in (\d+(?:\.\d+)?)s", err_str)
+                    match_alt = re.search(r"Please retry in (\d+(?:\.\d+)?)s", err_msg)
                     if match_alt:
-                        wait_seconds = float(match_alt.group(1)) + 1.5
+                        wait = float(match_alt.group(1)) + 2.0
 
-                log.warning(f"  ⚠️ [Attempt {attempt}/{max_retries}] Gemini Rate Limit 429 hit. Backing off for {wait_seconds:.2f}s...")
-                time.sleep(wait_seconds)
+                log.warning(f"  ⚠️ [Attempt {attempt}/{max_retries}] Gemini Quota Limit hit. Sleeping {wait:.2f}s...")
+                time.sleep(wait)
             else:
-                log.error(f"  ❌ Non-quota validation crash encountered: {e}")
                 raise e
-
-    log.error(f"  ❌ Max validation retries ({max_retries}) exhausted due to 429 conflicts.")
-    return {
-        "corrected_name": get_item_name(item),
-        "remarks": "Rate limit exhaustion — manual review",
-        "confidence": "Low",
-        "needs_review": True
-    }
-
+                
+    return {"corrected_name": get_item_name(item), "remarks": "Rate limit failure", "needs_review": True}
 
 def validate_with_gemini(item: dict, search_result: str) -> dict:
-    """Core translation interface to shape, normalize, and sanity-check parsed text fields."""
     try:
         validation = validate_with_gemini_with_retry(item, search_result)
-
+        
         corrected_name = validation.get("corrected_name", "")
         normalized_name = normalize_corrected_name(corrected_name, item)
         if normalized_name and normalized_name != corrected_name:
             validation["corrected_name"] = normalized_name
-            if validation.get("remarks") in (None, ""):
-                validation["remarks"] = f"Name corrected: {corrected_name} → {normalized_name}"
-            elif "Name corrected" not in validation["remarks"]:
-                validation["remarks"] += f" | Name corrected: {corrected_name} → {normalized_name}"
 
         if validation.get("corrected_name"):
             corrected_name = validation["corrected_name"].upper()
             required_type = validation.get("type", "").upper()
             required_size = validation.get("size_ml", "").upper()
-            is_giftset = is_giftset_name(corrected_name)
-
+            
             cat_code = item.get("Item Category Code", "").upper()
-            suffix_to_append = ""
-            if cat_code == "VIALS":
-                suffix_to_append = "VIAL"
-            elif cat_code == "MINIATURES":
-                suffix_to_append = "MINI"
-            elif cat_code == "MINI SETS":
-                suffix_to_append = "MINI SET"
-            elif cat_code == "TESTERS":
-                suffix_to_append = "TESTER"
-
+            suffix_to_append = next((s for s in ["VIAL", "MINI SET", "MINI", "TESTER"] if cat_code in [s+"S", "MINIATURES"]), "")
+            
             if suffix_to_append and corrected_name.endswith(suffix_to_append):
                 corrected_name = corrected_name[:-len(suffix_to_append)].strip()
 
-            if required_type and required_type not in corrected_name and not is_giftset:
+            if required_type and required_type not in corrected_name and not is_giftset_name(corrected_name):
                 corrected_name = f"{corrected_name} {required_type}"
-                if validation.get("remarks") in (None, ""):
-                    validation["remarks"] = f"Type corrected: missing {required_type}"
-                elif f"Type corrected" not in validation["remarks"]:
-                    validation["remarks"] += f" | Type corrected: missing {required_type}"
-            if required_size and required_size not in corrected_name and not is_giftset:
+            if required_size and required_size not in corrected_name and not is_giftset_name(corrected_name):
                 corrected_name = f"{corrected_name} {required_size}"
-                if validation.get("remarks") in (None, ""):
-                    validation["remarks"] = f"Size corrected: missing {required_size}"
-                elif f"Size corrected" not in validation["remarks"]:
-                    validation["remarks"] += f" | Size corrected: missing {required_size}"
-
             if suffix_to_append:
-                orig_had_suffix = validation["corrected_name"].upper().endswith(suffix_to_append)
                 corrected_name = f"{corrected_name} {suffix_to_append}"
-                if not orig_had_suffix:
-                    rem_map = {
-                        "VIAL": "Vial name corrected",
-                        "MINI": "Mini name corrected",
-                        "MINI SET": "Mini set name corrected",
-                        "TESTER": "Tester name corrected"
-                    }
-                    rem = rem_map[suffix_to_append]
-                    if validation.get("remarks") in (None, ""):
-                        validation["remarks"] = rem
-                    elif rem not in validation["remarks"]:
-                        validation["remarks"] += f" | {rem}"
-
+            
             validation["corrected_name"] = " ".join(corrected_name.split())
 
-        if validation.get("brand"):
-            validation["brand"] = normalize_short_forms(validation["brand"].upper(), item)
-            original_entry = get_item_name(item)
-            if not brand_matches_original(validation.get("brand"), original_entry):
-                validation["needs_review"] = True
-                existing = validation.get("remarks", "")
-                bm = "Brand mismatch — manual review"
-                if existing and bm not in existing:
-                    validation["remarks"] = f"{existing} | {bm}"
-                elif not existing:
-                    validation["remarks"] = bm
+        input_coo = get_input_country_origin(item)
+        online_coo = validation.get("country_of_origin", "").strip().upper()
+        
+        origin_remark = ""
+        if online_coo:
+            if input_coo and input_coo != online_coo:
+                origin_remark = f"Origin mismatch: {input_coo} vs {online_coo}"
+                validation["needs_review"] = True  
+            elif input_coo == online_coo:
+                origin_remark = f"Origin verified: {online_coo}"
+        
+        current_remarks = validation.get("remarks", "")
+        if origin_remark:
+            if current_remarks in (None, "", "OK"):
+                validation["remarks"] = origin_remark
+            else:
+                validation["remarks"] = f"{current_remarks} | {origin_remark}"
 
         if not validation.get("source_url"):
-            first_url = extract_first_url(search_result)
-            if first_url:
-                validation["source_url"] = first_url
+            url = extract_first_url(search_result)
+            if url:
+                validation["source_url"] = url
                 if not validation.get("source_used"):
-                    validation["source_used"] = normalize_source_name(get_domain(first_url))
-
-        if validation.get("source_used"):
-            source_used = validation["source_used"].strip()
-            if source_used.lower().startswith("http"):
-                validation["source_used"] = normalize_source_name(get_domain(source_used))
-            else:
-                validation["source_used"] = normalize_source_name(source_used)
+                    validation["source_used"] = normalize_source_name(get_domain(url))
 
         return validation
-
-    except json.JSONDecodeError:
-        log.warning("  Gemini returned invalid JSON — flagging for review")
-        return {
-            "corrected_name": get_item_name(item),
-            "remarks": "Parse error — manual review",
-            "confidence": "Low",
-            "needs_review": True,
-        }
     except Exception as e:
-        log.error(f"  Gemini API error: {e}")
-        return {
-            "corrected_name": get_item_name(item),
-            "remarks": "API error — manual review",
-            "confidence": "Low",
-            "needs_review": True,
-        }
-
+        return {"corrected_name": get_item_name(item), "remarks": f"Process error: {e}", "needs_review": True}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 5 — ORCHESTRATOR
+# STEP 5 — ORCHESTRATOR LOOP
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_validation(items: list[dict]) -> list[dict]:
-    """Process all items through the validation pipeline with built-in pacing filters."""
     results = []
-    total = len(items)
-
-    for i, item in enumerate(items, 1):
+    for item in items:
         item_name = get_item_name(item)
-        search_key = get_item_search_key(item)
-        log.info(f"[{i}/{total}] Processing: {item_name}")
-
-        log.info(f"  Searching by GTIN: {search_key}" if search_key and search_key.isdigit() else f"  Searching: {item_name}")
         search_data = search_product(item_name)
-
-        log.info("  ⏳ Rate limit pacing injection: Pausing for 4.5 seconds...")
-        time.sleep(4.5)
+        
+        log.info("  ⏳ Pacing window delay restriction: sleeping 5.2 seconds...")
+        time.sleep(5.2)
 
         validation = validate_with_gemini(item, search_data)
-        log.info(f"  → {validation.get('remarks', 'OK')} [{validation.get('confidence', '?')}] via {validation.get('source_used', 'unknown')}")
-
-        results.append({
-            "original_entry": item_name,
-            "original_data": item,
-            **validation,
-        })
-
+        results.append({"original_entry": item_name, "original_data": item, **validation})
     return results
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 6 — AGENT 4: OUTPUT (CSV + Email)
+# STEP 6 — OUTPUT AGENT
 # ══════════════════════════════════════════════════════════════════════════════
 
 def results_to_csv(results: list[dict]) -> str:
-    """Convert validation results to CSV string, preserving original input fields."""
-    if not results:
-        return ""
-
+    if not results: return ""
     original_fields = [f for f in list(results[0].get("original_data", {}).keys()) if f and f.strip()]
     extra_fields = ["Corrected Name", "Gender", "Remarks", "Source Used", "Confidence", "Needs Review"]
-    fieldnames = original_fields + extra_fields
-
+    
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer = csv.DictWriter(output, fieldnames=original_fields + extra_fields)
     writer.writeheader()
 
     for r in results:
-        original = r.get("original_data", {}) or {}
-        row = {k: original.get(k, "") for k in original_fields}
-
-        source_domain = r.get("source_used") or r.get("source_domain") or ""
-        source_url = r.get("source_url") or ""
-        source_field = ""
-
-        if source_url and not source_domain:
-            source_domain = get_domain(source_url)
-        elif source_domain and source_domain.lower().startswith("http"):
-            source_domain = get_domain(source_domain)
-
-        label = normalize_source_name(source_domain) or normalize_source_name(source_url) or source_url
-        if source_url:
-            safe_url = source_url.replace('"', '""')
-            safe_label = label.replace('"', '""')
-            source_field = f'=HYPERLINK("{safe_url}", "{safe_label}")'
-        else:
-            source_field = label or source_domain
-
+        row = {k: r.get("original_data", {}).get(k, "") for k in original_fields}
+        url = r.get("source_url", "")
+        label = normalize_source_name(r.get("source_used") or url)
+        
         row.update({
             "Corrected Name": r.get("corrected_name", ""),
             "Gender":         r.get("gender", ""),
             "Remarks":        r.get("remarks", ""),
-            "Source Used":    source_field,
+            "Source Used":    f'=HYPERLINK("{url}", "{label}")' if url else label,
             "Confidence":     r.get("confidence", ""),
             "Needs Review":   "YES" if r.get("needs_review") else "NO",
         })
         writer.writerow(row)
-
     return output.getvalue()
 
-
 def compute_stats(results: list[dict]) -> dict:
-    ok        = [r for r in results if r.get("remarks") == "OK"]
-    review    = [r for r in results if r.get("needs_review")]
-    corrected = [r for r in results if not r.get("needs_review") and r.get("remarks") != "OK"]
+    review = [r for r in results if r.get("needs_review") or "mismatch" in str(r.get("remarks")).lower()]
     return {
-        "total":         len(results),
-        "ok":            len(ok),
-        "corrected":     len(corrected),
-        "review":        len(review),
-        "review_items":  [r["original_entry"] for r in review],
+        "total": len(results),
+        "ok": len([r for r in results if r.get("remarks") == "OK"]),
+        "corrected": len([r for r in results if not r.get("needs_review") and r.get("remarks") != "OK"]),
+        "review": len(review),
+        "review_items": [r["original_entry"] for r in review],
     }
 
-
-def send_email_with_attachment(to: str, subject: str, body: str, csv_content: str, filename: str):
-    """Send email via Gmail SMTP with CSV attachment."""
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.base import MIMEBase
-    from email import encoders
-
-    msg = MIMEMultipart()
-    msg["From"]    = GMAIL_USER
-    msg["To"]      = to
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
-
-    if csv_content:
-        part = MIMEBase("application", "octet-stream")
-        part.set_payload(csv_content.encode("utf-8"))
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
-        msg.attach(part)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_USER, to, msg.as_string())
-
-    log.info(f"Email sent to {to}")
-
-
-def send_results(original_subject: str, original_sender: str, results: list[dict], csv_content: str):
-    """Send validation results back via email."""
-    stats = compute_stats(results)
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    filename = f"validated_inventory_{date_str}.csv"
-
-    recipients = list({original_sender, NOTIFY_EMAIL} - {""})
-    review_list = "\n".join(f"  • {item}" for item in stats["review_items"]) or "  None — all items verified or auto-corrected."
-
-    body = f"""Hi,
-
-The automated perfume inventory validation has completed for this week's new items.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-VALIDATION SUMMARY — {date_str}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Total items processed : {stats['total']}
-✅ Verified OK        : {stats['ok']}
-⚠️  Auto-corrected    : {stats['corrected']}
-🔴 Needs manual review: {stats['review']}
-
-Items requiring manual review:
-{review_list}
-
-The full validated results are attached as a CSV file.
-Please review flagged items and update the inventory system accordingly.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Automated by: Perfume Inventory Validator
-Powered by: Gemini 3.1 Flash Lite + Serper API
-Run time: {datetime.now().strftime("%Y-%m-%d %H:%M UTC")}
-"""
-
-    subject = f"Re: {original_subject} — Validation Complete ({stats['total']} items)"
-
-    for recipient in recipients:
-        try:
-            send_email_with_attachment(
-                to=recipient,
-                subject=subject,
-                body=body,
-                csv_content=csv_content,
-                filename=filename,
-            )
-        except Exception as e:
-            log.error(f"Failed to send email to {recipient}: {e}")
-
-
-def save_csv_artifact(csv_content: str):
-    """Save CSV to disk as a GitHub Actions artifact."""
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    filename = f"output/validated_inventory_{date_str}.csv"
-    os.makedirs("output", exist_ok=True)
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(csv_content)
-    log.info(f"CSV saved to {filename}")
-    return filename
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
-
 def main():
-    log.info("=" * 60)
-    log.info("PERFUME INVENTORY VALIDATOR — STARTING")
-    log.info(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
-    log.info("=" * 60)
-
     csv_text, subject, sender = fetch_inventory_email()
-
-    if not csv_text:
-        log.error("No inventory CSV found. Exiting.")
-        try:
-            send_email_with_attachment(
-                to=NOTIFY_EMAIL,
-                subject="⚠️ Inventory Validator — No Email Found",
-                body="The automated validator ran but could not find an inventory email with a CSV attachment in your inbox.",
-                csv_content="",
-                filename="",
-            )
-        except Exception:
-            pass
-        return
+    if not csv_text: return log.error("No input data file payload located.")
 
     items = parse_csv(csv_text)
-    if not items:
-        log.error("CSV parsed but contained no items. Exiting.")
-        return
-
     results = run_validation(items)
     csv_output = results_to_csv(results)
-    artifact_path = save_csv_artifact(csv_output)
-
-    send_results(
-        original_subject=subject or "New Inventory Items",
-        original_sender=sender or NOTIFY_EMAIL,
-        results=results,
-        csv_content=csv_output,
-    )
+    
+    os.makedirs("output", exist_ok=True)
+    with open("output/test_output.csv", "w", encoding="utf-8") as f:
+        f.write(csv_output)
 
     stats = compute_stats(results)
-    log.info("=" * 60)
-    log.info("VALIDATION COMPLETE")
-    log.info(f"  Total     : {stats['total']}")
-    log.info(f"  OK        : {stats['ok']}")
-    log.info(f"  Corrected : {stats['corrected']}")
-    log.info(f"  Review    : {stats['review']}")
-    log.info(f"  Output    : {artifact_path}")
-    log.info("=" * 60)
-
-    if stats["review"] > 0:
-        log.warning(f"{stats['review']} items need manual review — check the email.")
-
+    log.info(f"Processing complete. total run items: {stats['total']} | reviews flagged: {stats['review']}")
 
 if __name__ == "__main__":
     main()
