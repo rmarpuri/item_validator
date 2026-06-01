@@ -97,14 +97,10 @@ AGENT4_INSTRUCTIONS = load_agent_instructions("agent4_output.md")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 1 — AGENT 1: EMAIL READER
-# See: agents/agent1_email_reader.md
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """
-    Reads the latest inventory email from Gmail using IMAP.
-    Returns (csv_content, subject, sender) or (None, None, None)
-    """
+    """Reads the latest inventory email from Gmail using IMAP."""
     import imaplib
     import email
     from email.header import decode_header
@@ -116,7 +112,6 @@ def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]
         mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         mail.select("inbox")
 
-        # Search for emails with inventory-related subjects
         search_criteria = [
             '(SUBJECT "inventory")',
             '(SUBJECT "new items")',
@@ -136,13 +131,11 @@ def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]
             mail.logout()
             return None, None, None
 
-        # Get the most recent matching email
         latest_id = sorted(set(all_ids))[-1]
         _, msg_data = mail.fetch(latest_id, "(RFC822)")
         raw_email = msg_data[0][1]
         msg = email.message_from_bytes(raw_email)
 
-        # Decode subject
         subject_raw = msg["Subject"] or "Inventory"
         subject = decode_header(subject_raw)[0][0]
         if isinstance(subject, bytes):
@@ -151,7 +144,6 @@ def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]
         sender = msg.get("From", "")
         log.info(f"Found email: '{subject}' from {sender}")
 
-        # Extract CSV/Excel attachment
         csv_content = None
         for part in msg.walk():
             content_type = part.get_content_type()
@@ -167,10 +159,8 @@ def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]
                     csv_content = excel_to_csv(payload)
                 break
 
-            # Also check inline CSV text
             elif content_type == "text/plain" and not csv_content:
                 body = part.get_payload(decode=True).decode("utf-8", errors="replace")
-                # Heuristic: if it looks like CSV (has commas and newlines)
                 if "," in body and "\n" in body and len(body.strip().split("\n")) > 2:
                     csv_content = body
                     log.info("Found inline CSV in email body")
@@ -201,7 +191,7 @@ def excel_to_csv(excel_bytes: bytes) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 2 — PARSE CSV (feeds items into Agent 2 + Agent 3)
+# STEP 2 — PARSE CSV
 # ══════════════════════════════════════════════════════════════════════════════
 
 def parse_csv(csv_text: str) -> list[dict]:
@@ -221,7 +211,6 @@ def get_item_name(item: dict) -> str:
             val = item[key].strip()
             if val:
                 return val
-    # Fallback: first non-empty value
     return next((v.strip() for v in item.values() if v.strip()), "Unknown Item")
 
 
@@ -232,8 +221,6 @@ def get_item_search_key(item: dict) -> str:
             val = item[key].strip()
             if val:
                 return val
-
-    # If no GTIN-style identifier is present, fall back to name/description.
     return get_item_name(item)
 
 
@@ -353,7 +340,7 @@ def normalize_source_name(source: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 TRUSTED_SITES = [
-    ("ebay.com",             10),
+    ("ebay.com",              10),
     ("jomashop.com",         9),  
     ("fragrancenet.com",      9),  
     ("sephora.com",           9),  
@@ -396,7 +383,7 @@ def serper_search_raw(query: str, num: int = 5) -> dict:
     """Raw Serper API call — returns full JSON response."""
     try:
         res = requests.post(
-            "https://google.serper.dev/search",
+            "[https://google.serper.dev/search](https://google.serper.dev/search)",
             headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
             json={"q": query, "num": num},
             timeout=10,
@@ -530,12 +517,12 @@ def search_product(item_name: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — AGENT 3: VALIDATOR (Gemini 3.1 Flash Lite)
+# STEP 4 — AGENT 3: VALIDATOR (Gemini 3.1 Flash Lite with Exponential Backoff)
 # See: agents/agent3_validator.md
 # ══════════════════════════════════════════════════════════════════════════════
 
-def validate_with_gemini(item: dict, search_result: str) -> dict:
-    """Validate a single inventory item using Gemini 3.1 Flash Lite."""
+def validate_with_gemini_with_retry(item: dict, search_result: str, max_retries: int = 5) -> dict:
+    """Wraps Gemini API execution inside an adaptive error-handling retry loop."""
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(
         model_name="gemini-3.1-flash-lite",
@@ -574,11 +561,47 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 }}
 """
 
+    base_delay = 5.0  
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = model.generate_content(prompt)
+            raw = response.text.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            validation = json.loads(raw)
+            return validation
+
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "Quota exceeded" in err_str or "ResourceExhausted" in err_str:
+                wait_seconds = base_delay * (2 ** (attempt - 1)) 
+                
+                match = re.search(r"retry_delay\s*{\s*seconds:\s*(\d+)", err_str)
+                if match:
+                    wait_seconds = float(match.group(1)) + 1.5  
+                else:
+                    match_alt = re.search(r"Please retry in (\d+(?:\.\d+)?)s", err_str)
+                    if match_alt:
+                        wait_seconds = float(match_alt.group(1)) + 1.5
+
+                log.warning(f"  ⚠️ [Attempt {attempt}/{max_retries}] Gemini Rate Limit 429 hit. Backing off for {wait_seconds:.2f}s...")
+                time.sleep(wait_seconds)
+            else:
+                log.error(f"  ❌ Non-quota validation crash encountered: {e}")
+                raise e
+
+    log.error(f"  ❌ Max validation retries ({max_retries}) exhausted due to 429 conflicts.")
+    return {
+        "corrected_name": get_item_name(item),
+        "remarks": "Rate limit exhaustion — manual review",
+        "confidence": "Low",
+        "needs_review": True
+    }
+
+
+def validate_with_gemini(item: dict, search_result: str) -> dict:
+    """Core translation interface to shape, normalize, and sanity-check parsed text fields."""
     try:
-        response = model.generate_content(prompt)
-        raw = response.text.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        validation = json.loads(raw)
+        validation = validate_with_gemini_with_retry(item, search_result)
 
         corrected_name = validation.get("corrected_name", "")
         normalized_name = normalize_corrected_name(corrected_name, item)
@@ -595,6 +618,20 @@ Respond ONLY with valid JSON — no markdown, no explanation:
             required_size = validation.get("size_ml", "").upper()
             is_giftset = is_giftset_name(corrected_name)
 
+            cat_code = item.get("Item Category Code", "").upper()
+            suffix_to_append = ""
+            if cat_code == "VIALS":
+                suffix_to_append = "VIAL"
+            elif cat_code == "MINIATURES":
+                suffix_to_append = "MINI"
+            elif cat_code == "MINI SETS":
+                suffix_to_append = "MINI SET"
+            elif cat_code == "TESTERS":
+                suffix_to_append = "TESTER"
+
+            if suffix_to_append and corrected_name.endswith(suffix_to_append):
+                corrected_name = corrected_name[:-len(suffix_to_append)].strip()
+
             if required_type and required_type not in corrected_name and not is_giftset:
                 corrected_name = f"{corrected_name} {required_type}"
                 if validation.get("remarks") in (None, ""):
@@ -607,7 +644,24 @@ Respond ONLY with valid JSON — no markdown, no explanation:
                     validation["remarks"] = f"Size corrected: missing {required_size}"
                 elif f"Size corrected" not in validation["remarks"]:
                     validation["remarks"] += f" | Size corrected: missing {required_size}"
-            validation["corrected_name"] = corrected_name.strip()
+
+            if suffix_to_append:
+                orig_had_suffix = validation["corrected_name"].upper().endswith(suffix_to_append)
+                corrected_name = f"{corrected_name} {suffix_to_append}"
+                if not orig_had_suffix:
+                    rem_map = {
+                        "VIAL": "Vial name corrected",
+                        "MINI": "Mini name corrected",
+                        "MINI SET": "Mini set name corrected",
+                        "TESTER": "Tester name corrected"
+                    }
+                    rem = rem_map[suffix_to_append]
+                    if validation.get("remarks") in (None, ""):
+                        validation["remarks"] = rem
+                    elif rem not in validation["remarks"]:
+                        validation["remarks"] += f" | {rem}"
+
+            validation["corrected_name"] = " ".join(corrected_name.split())
 
         if validation.get("brand"):
             validation["brand"] = normalize_short_forms(validation["brand"].upper(), item)
@@ -672,12 +726,9 @@ def run_validation(items: list[dict]) -> list[dict]:
         log.info(f"  Searching by GTIN: {search_key}" if search_key and search_key.isdigit() else f"  Searching: {item_name}")
         search_data = search_product(item_name)
 
-        # FIX: Centralized rate limit sleep pacing to strictly maintain ~13 Requests Per Minute
-        # This insulates running processes perfectly from hitting the Free Tier 15 RPM ceiling.
         log.info("  ⏳ Rate limit pacing injection: Pausing for 4.5 seconds...")
         time.sleep(4.5)
 
-        # Validate
         validation = validate_with_gemini(item, search_data)
         log.info(f"  → {validation.get('remarks', 'OK')} [{validation.get('confidence', '?')}] via {validation.get('source_used', 'unknown')}")
 
@@ -692,7 +743,6 @@ def run_validation(items: list[dict]) -> list[dict]:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 6 — AGENT 4: OUTPUT (CSV + Email)
-# See: agents/agent4_output.md
 # ══════════════════════════════════════════════════════════════════════════════
 
 def results_to_csv(results: list[dict]) -> str:
@@ -701,7 +751,7 @@ def results_to_csv(results: list[dict]) -> str:
         return ""
 
     original_fields = [f for f in list(results[0].get("original_data", {}).keys()) if f and f.strip()]
-    extra_fields = ["Corrected Name", "Remarks", "Source Used", "Confidence", "Needs Review"]
+    extra_fields = ["Corrected Name", "Gender", "Remarks", "Source Used", "Confidence", "Needs Review"]
     fieldnames = original_fields + extra_fields
 
     output = io.StringIO()
@@ -731,6 +781,7 @@ def results_to_csv(results: list[dict]) -> str:
 
         row.update({
             "Corrected Name": r.get("corrected_name", ""),
+            "Gender":         r.get("gender", ""),
             "Remarks":        r.get("remarks", ""),
             "Source Used":    source_field,
             "Confidence":     r.get("confidence", ""),
