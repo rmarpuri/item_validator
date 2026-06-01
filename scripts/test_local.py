@@ -32,7 +32,7 @@ Jo Malone Peony & Blush Suede,2,,100,women
 Creed Aventus 50,1,edp,50,Men
 """
 
-def run_test(csv_path=None, max_items=10):
+def run_test(csv_path=None, max_items=10, verbose=False, output_dir="output"):
     from src.validator import (
         parse_csv, search_product, validate_with_gemini,
         results_to_csv, compute_stats, get_item_name
@@ -65,11 +65,13 @@ def run_test(csv_path=None, max_items=10):
 
     # Parse
     items = parse_csv(csv_text)
-    if max_items and len(items) > max_items:
+    
+    # Refactored processing logic: 0 or empty string forces pipeline to process ALL rows
+    if max_items and max_items > 0 and len(items) > max_items:
         print(f"📋 Found {len(items)} test items, validating top {max_items} only\n")
         items = items[:max_items]
     else:
-        print(f"📋 Found {len(items)} test items\n")
+        print(f"📋 Found {len(items)} test items (processing entire batch)\n")
 
     results = []
     for i, item in enumerate(items, 1):
@@ -77,12 +79,18 @@ def run_test(csv_path=None, max_items=10):
         print(f"[{i}/{len(items)}] {name}")
 
         search = search_product(item)
-        print(f"  🔍 Search: {search[:80].strip()}...")
+        if verbose:
+            print(f"  🔍 Detailed Search Results Data:\n{search}\n")
+        else:
+            print(f"  🔍 Search: {search[:80].strip()}...")
 
         validation = validate_with_gemini(item, search)
         print(f"  ✅ Corrected: {validation.get('corrected_name', '')}")
         print(f"  📝 Remarks:  {validation.get('remarks', '')}")
         print(f"  🎯 Confidence: {validation.get('confidence', '')}")
+        
+        if verbose:
+            print(f"  📦 Full Internal JSON Payload:\n{json.dumps(validation, indent=2)}")
         print()
 
         results.append({
@@ -93,13 +101,15 @@ def run_test(csv_path=None, max_items=10):
 
         import time; time.sleep(0.5)
 
-    # Output
+    # Output Parsing Summary Stats
     stats = compute_stats(results)
-    
     csv_out = results_to_csv(results)
 
-    os.makedirs("output", exist_ok=True)
-    with open("output/test_output.csv", "w") as f:
+    # Route dynamically using incoming --output-dir parameters safely
+    os.makedirs(output_dir, exist_ok=True)
+    destination_path = os.path.join(output_dir, "test_output.csv")
+    
+    with open(destination_path, "w", encoding="utf-8") as f:
         f.write(csv_out)
 
     print("=" * 60)
@@ -108,7 +118,7 @@ def run_test(csv_path=None, max_items=10):
     print(f"  OK                 : {stats['ok']}")
     print(f"  Corrected          : {stats['corrected']}")
     print(f"  Items to review    : {stats['review']}")
-    print(f"  Output CSV         : output/test_output.csv")
+    print(f"  Output CSV Target  : {destination_path}")
     print("=" * 60)
 
 
@@ -124,8 +134,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-items",
         type=int,
-        default=10,
-        help="Validate only the first N items from the CSV. Default is 10.",
+        default=0, # Defaults securely to processing all items
+        help="Validate only the first N items from the CSV. Pass 0 or omit to process all records.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable extensive terminal print statements containing API details.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="output",
+        help="Target folder directory where output validation CSV files are written.",
+    )
+    
     args = parser.parse_args()
-    run_test(args.csv_file, max_items=args.max_items)
+    run_test(
+        csv_path=args.csv_file, 
+        max_items=args.max_items, 
+        verbose=args.verbose, 
+        output_dir=args.output_dir
+    )
