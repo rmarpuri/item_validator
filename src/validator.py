@@ -2,7 +2,7 @@
 Perfume Inventory Validator — Orchestrator
 Runs every Friday via GitHub Actions.
 
-Pipeline: Gmail → Parse CSV → Serper Search → Gemini 3.1 Flash Lite Validate → Email Reply + CSV
+Pipeline: Gmail → Parse CSV → API Fallback Search → Gemini 3.1 Flash Lite Validate → Email Reply + CSV
 """
 
 import os
@@ -20,7 +20,7 @@ import google.generativeai as genai
 import requests
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # loads .env when running locally; no effect in GitHub Actions
+    load_dotenv()
 except ImportError:
     pass
 
@@ -33,14 +33,18 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config from environment ────────────────────────────────────────────────────
-GEMINI_API_KEY    = os.environ["GEMINI_API_KEY"]
-SERPER_API_KEY    = os.environ["SERPER_API_KEY"]
-GMAIL_USER        = os.environ["GMAIL_USER"]          
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"] 
-NOTIFY_EMAIL      = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
-CSV_FIELDNAMES   = []
+GEMINI_API_KEY        = os.environ.get("GEMINI_API_KEY", "")
+SERPER_API_KEY        = os.environ.get("SERPER_API_KEY", "")
+BRAVE_API_KEY         = os.environ.get("BRAVE_API_KEY", "")
+GOOGLE_SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
+GOOGLE_SEARCH_CX      = os.environ.get("GOOGLE_SEARCH_CX", "")
 
-# ── Naming convention rules (Synchronized with naming_rules.json) ──────────────
+GMAIL_USER            = os.environ.get("GMAIL_USER", "")
+GMAIL_APP_PASSWORD    = os.environ.get("GMAIL_APP_PASSWORD", "")
+NOTIFY_EMAIL          = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
+CSV_FIELDNAMES        = []
+
+# ── Naming convention rules ──────────────
 NAMING_RULES = """
 PERFUME INVENTORY NAMING CONVENTION:
 - Format: [BRAND] [FRAGRANCE NAME] [TYPE] [SIZE]ML
@@ -67,7 +71,6 @@ PRODUCT TYPE CONSTRAINTS:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_inventory_email() -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Reads the latest inventory email from Gmail using IMAP."""
     import imaplib
     import email
     from email.header import decode_header
@@ -147,34 +150,30 @@ def parse_csv(csv_text: str) -> list[dict]:
     return [row for row in reader]
 
 def get_item_name(item: dict) -> str:
-    """Safely extract only the product name string from a CSV row."""
-    # 1. Try to find the dedicated description/name column safely
     for key, val in item.items():
-        # Ensure the key exists and is a string before checking
         if key and isinstance(key, str):
             if any(k in key.lower() for k in ["description", "name", "item", "fragrance"]):
                 if val and isinstance(val, str) and val.strip():
                     return val.strip()
-                    
-    # 2. Fallback: Return the very first valid text value in the row
     for val in item.values():
         if val and isinstance(val, str) and val.strip():
             return val.strip()
-            
     return "Unknown Item"
 
 def get_item_search_key(item: dict) -> str:
     for key in item:
         if any(k in key.lower() for k in ["gtin", "ean", "upc", "barcode"]):
             val = item[key].strip()
-            if val: return val
+            if val and isinstance(val, str): 
+                return val.strip()
     return get_item_name(item)
 
 def get_input_country_origin(item: dict) -> str:
     for key in item:
         if any(k in key.lower() for k in ["origin", "country", "coo"]):
             val = item[key].strip()
-            if val: return val.upper()
+            if val and isinstance(val, str): 
+                return val.upper()
     return ""
 
 def normalize_short_forms(name: str, item: dict) -> str:
@@ -232,7 +231,7 @@ def normalize_source_name(source: str) -> str:
     return re.sub(r"\.(com|net|org|io|co|fr|de|uk)$", "", source, flags=re.IGNORECASE)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — AGENT 2: SMART SEARCH
+# STEP 3 — AGENT 2: SMART SEARCH (Waterfall Fallback Architecture)
 # ══════════════════════════════════════════════════════════════════════════════
 
 TRUSTED_SITES = [
@@ -260,35 +259,100 @@ def trust_score(url: str) -> int:
         if trusted_domain in domain: return score
     return 0
 
-def serper_search_raw(query: str, num: int = 5) -> dict:
-    try:
-        # Ensure this URL is exactly a plain string with NO markdown brackets
-        url = "https://google.serper.dev/search"
-        
-        res = requests.post(
-            url,
-            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-            json={"q": query, "num": num}, 
-            timeout=10,
-        )
-        res.raise_for_status()
-        return res.json()
-    except Exception as e:
-        log.warning(f"Serper search error for '{query}': {e}")
-        return {}
-
-def parse_serper_results(data: dict) -> list[dict]:
+def _search_serper(query: str, num: int) -> list[dict]:
+    if not SERPER_API_KEY:
+        raise ValueError("SERPER_API_KEY is missing")
+    res = requests.post(
+        "https://google.serper.dev/search",
+        headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+        json={"q": query, "num": num},
+        timeout=10,
+    )
+    res.raise_for_status()
+    data = res.json()
     results = []
+    kg = data.get("knowledgeGraph", {})
+    if kg.get("title"):
+        kg_text = f"Title: {kg['title']}"
+        if kg.get("type"): kg_text += f" | Type: {kg['type']}"
+        if kg.get("description"): kg_text += f" | {kg['description']}"
+        results.append({
+            "title": kg.get("title", ""),
+            "url": kg.get("website", ""),
+            "snippet": kg_text,
+            "trust_score": 10,
+            "source_label": "Google Knowledge Graph",
+        })
     for r in data.get("organic", []):
         url = r.get("link", "")
         results.append({
-            "title":        r.get("title", ""),
-            "url":          url,
-            "snippet":      r.get("snippet", ""),
-            "trust_score":  trust_score(url),
+            "title": r.get("title", ""),
+            "url": url,
+            "snippet": r.get("snippet", ""),
+            "trust_score": trust_score(url),
             "source_label": get_domain(url) or "unknown",
         })
     return results
+
+def _search_brave(query: str, num: int) -> list[dict]:
+    if not BRAVE_API_KEY:
+        raise ValueError("BRAVE_API_KEY is missing")
+    res = requests.get(
+        "https://api.search.brave.com/res/v1/web/search",
+        headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"},
+        params={"q": query, "count": min(num, 20)},
+        timeout=10,
+    )
+    res.raise_for_status()
+    data = res.json()
+    results = []
+    for r in data.get("web", {}).get("results", []):
+        url = r.get("url", "")
+        results.append({
+            "title": r.get("title", ""),
+            "url": url,
+            "snippet": r.get("description", ""),
+            "trust_score": trust_score(url),
+            "source_label": get_domain(url) or "unknown",
+        })
+    return results
+
+def _search_google_custom(query: str, num: int) -> list[dict]:
+    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_CX:
+        raise ValueError("GOOGLE_SEARCH credentials missing")
+    res = requests.get(
+        "https://www.googleapis.com/customsearch/v1",
+        params={"q": query, "key": GOOGLE_SEARCH_API_KEY, "cx": GOOGLE_SEARCH_CX, "num": min(num, 10)},
+        timeout=10,
+    )
+    res.raise_for_status()
+    data = res.json()
+    results = []
+    for r in data.get("items", []):
+        url = r.get("link", "")
+        results.append({
+            "title": r.get("title", ""),
+            "url": url,
+            "snippet": r.get("snippet", ""),
+            "trust_score": trust_score(url),
+            "source_label": get_domain(url) or "unknown",
+        })
+    return results
+
+def execute_search_query(query: str, num: int = 5) -> list[dict]:
+    try:
+        return _search_brave(query, num)
+    except Exception as e:
+        log.warning(f"  [Fallback 2] Brave failed ({e}). Trying Google Custom...")
+    try:
+        return _search_serper(query, num)
+    except Exception as e:
+        log.warning(f"  [Fallback 1] Serper failed ({e}). Trying Brave Search...")
+    try:
+        return _search_google_custom(query, num)
+    except Exception as e:
+        log.error(f"  ❌ All search providers exhausted. Query: {query}")
+    return []
 
 def format_results_for_llm(results: list[dict], item_name: str) -> str:
     if not results: return "No results found from any source."
@@ -298,27 +362,6 @@ def format_results_for_llm(results: list[dict], item_name: str) -> str:
         lines.append(f"[{i}] {r['title']}\n    Source : {r['source_label']} [Trust: {r['trust_score']}]\n    URL    : {r['url']}\n    Info   : {r['snippet']}\n")
     return "\n".join(lines)
 
-def search_product(item_name: str) -> str:
-    all_results = []
-
-    ebay_data = serper_search_raw(f"site:ebay.com {item_name} perfume")
-    ebay_results = [r for r in parse_serper_results(ebay_data) if r["trust_score"] == 10]
-    if ebay_results:
-        log.info(f"  ✓ Found {len(ebay_results)} authoritative records on eBay")
-        all_results.extend(ebay_results)
-
-    joma_data = serper_search_raw(f"site:jomashop.com {item_name} perfume")
-    joma_results = [r for r in parse_serper_results(joma_data) if r["trust_score"] == 9]
-    if joma_results:
-        log.info(f"  ✓ Found {len(joma_results)} fallback records on Jomashop")
-        all_results.extend(joma_results)
-
-    if not all_results:
-        broad_data = serper_search_raw(f"{item_name} perfume fragrance EDP EDT ml", num=5)
-        all_results.extend(parse_serper_results(broad_data))
-
-    return format_results_for_llm(deduplicate_results(all_results), item_name)
-
 def deduplicate_results(results: list[dict]) -> list[dict]:
     seen_domains = {}
     for r in sorted(results, key=lambda x: x["trust_score"], reverse=True):
@@ -326,8 +369,27 @@ def deduplicate_results(results: list[dict]) -> list[dict]:
         if domain not in seen_domains: seen_domains[domain] = r
     return list(seen_domains.values())
 
+def search_product(item_name: str) -> str:
+    all_results = []
+
+    ebay_results = [r for r in execute_search_query(f"site:ebay.com {item_name} perfume") if r["trust_score"] == 10]
+    if ebay_results:
+        log.info(f"  ✓ Found {len(ebay_results)} authoritative records on eBay")
+        all_results.extend(ebay_results)
+
+    joma_results = [r for r in execute_search_query(f"site:jomashop.com {item_name} perfume") if r["trust_score"] == 9]
+    if joma_results:
+        log.info(f"  ✓ Found {len(joma_results)} fallback records on Jomashop")
+        all_results.extend(joma_results)
+
+    if not all_results:
+        broad_results = execute_search_query(f"{item_name} perfume fragrance EDP EDT ml", num=5)
+        all_results.extend(broad_results)
+
+    return format_results_for_llm(deduplicate_results(all_results), item_name)
+
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — AGENT 3: VALIDATOR (Adaptive Quota Control Guard)
+# STEP 4 — AGENT 3: VALIDATOR
 # ══════════════════════════════════════════════════════════════════════════════
 
 def validate_with_gemini_with_retry(item: dict, search_result: str, max_retries: int = 5) -> dict:
@@ -376,7 +438,6 @@ Respond ONLY with valid JSON — no markdown, no explanation:
             err_msg = str(e)
             if any(k in err_msg for k in ["429", "Quota", "ResourceExhausted"]):
                 wait = base_delay * (2 ** (attempt - 1))
-                
                 match = re.search(r"retry_delay\s*{\s*seconds:\s*(\d+)", err_msg)
                 if match: 
                     wait = float(match.group(1)) + 2.0
@@ -520,6 +581,7 @@ def main():
 
     stats = compute_stats(results)
     log.info(f"Processing complete. total run items: {stats['total']} | reviews flagged: {stats['review']}")
+
 
 if __name__ == "__main__":
     main()
