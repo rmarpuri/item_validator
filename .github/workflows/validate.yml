@@ -12,75 +12,319 @@ on:
         description: 'Max items to process (0 for all)'
         required: false
         default: '0'
+      verbose:
+        description: 'Enable verbose logging'
+        required: false
+        default: 'false'
 
-  # Auto-trigger on CSV changes
+  # Auto-trigger strictly on data/items.csv pushes
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
-      - 'data/**/*.csv'
+      - 'data/items.csv' # Strictly triggers on this specific inventory file
+      - 'scripts/**/*.py'
+      - 'src/**/*.py'
+      - 'requirements.txt'
+      - '.github/workflows/validator.yml'
+
+  # Scheduled validation (daily at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * *'
+
+env:
+  PYTHON_VERSION: '3.11'
+  OUTPUT_DIR: output
+  ARTIFACT_RETENTION: 30
 
 jobs:
   validate:
+    name: Validate Inventory
     runs-on: ubuntu-latest
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    # Permissions needed for GitHub Actions
+    permissions:
+      contents: write
+      actions: read
+      checks: write
+    
+    outputs:
+      csv_file: ${{ steps.validate.outputs.csv_file }}
+      items_processed: ${{ steps.validate.outputs.items_processed }}
+      status: ${{ job.status }}
 
-      - name: Set up Python 3.11
+    steps:
+      # =====================================================================
+      # SETUP
+      # =====================================================================
+
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+        shell: bash
 
-      - name: Run validator
+      - name: 🔍 Verify environment
+        run: |
+          echo "Python version:"
+          python --version
+          echo ""
+          echo "Pip packages:"
+          pip list
+          echo ""
+          echo "Environment:"
+          echo "- CSV File: ${{ github.event.inputs.csv_file || 'data/items.csv' }}"
+          echo "- Max Items: ${{ github.event.inputs.max_items || 'all' }}"
+          echo "- Verbose: ${{ github.event.inputs.verbose || 'false' }}"
+
+      # =====================================================================
+      # VALIDATION
+      # =====================================================================
+
+      - name: ✅ Run validator
+        id: validate
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
         run: |
-          python3 scripts/test_local.py ${{ github.event.inputs.csv_file || 'data/items.csv' }} \
-            --max-items ${{ github.event.inputs.max_items || '0' }}
+          set -e  # Exit on error
+          
+          CSV_FILE="${{ github.event.inputs.csv_file || 'data/items.csv' }}"
+          MAX_ITEMS="${{ github.event.inputs.max_items || '0' }}"
+          VERBOSE="${{ github.event.inputs.verbose || 'false' }}"
+          
+          # Verify CSV file exists
+          if [ ! -f "$CSV_FILE" ]; then
+            echo "❌ CSV file not found: $CSV_FILE"
+            exit 1
+          fi
+          
+          echo "📋 Validating: $CSV_FILE"
+          
+          # Build command
+          CMD="python3 scripts/test_local.py '$CSV_FILE'"
+          
+          if [ "$MAX_ITEMS" != "0" ]; then
+            CMD="$CMD --max-items $MAX_ITEMS"
+          fi
+          
+          if [ "$VERBOSE" = "true" ]; then
+            CMD="$CMD --verbose"
+          fi
+          
+          CMD="$CMD --output-dir ${{ env.OUTPUT_DIR }}"
+          
+          # Run validation
+          echo "🚀 Running: $CMD"
+          eval $CMD
+          
+          # Export outputs
+          ITEM_COUNT=$(wc -l < "${{ env.OUTPUT_DIR }}/test_output.csv" || echo "0")
+          echo "items_processed=$((ITEM_COUNT - 1))" >> $GITHUB_OUTPUT
+          echo "csv_file=$CSV_FILE" >> $GITHUB_OUTPUT
+          
+          echo "✅ Validation completed successfully"
+        shell: bash
 
-      - name: Upload results
+      # =====================================================================
+      # ARTIFACT HANDLING
+      # =====================================================================
+
+      - name: 📊 Upload validation results
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: validation-results
-          path: output/test_output.csv
-          retention-days: 30
+          name: validation-results-${{ github.run_number }}
+          path: ${{ env.OUTPUT_DIR }}/test_output.csv
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: warn
 
-      - name: Commit results back to repo
-        if: github.event_name == 'push'
+      - name: 📂 Upload logs (if verbose)
+        if: always() && (github.event.inputs.verbose == 'true' || github.event_name == 'push')
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-logs-${{ github.run_number }}
+          path: |
+            validation.log
+            *.log
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: ignore
+
+      # =====================================================================
+      # RESULTS PROCESSING
+      # =====================================================================
+
+      - name: 📈 Generate summary
+        if: always() && steps.validate.outcome == 'success'
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add output/test_output.csv
-          git commit -m "✅ Auto-validation: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
-          git push
+          echo "## ✅ Validation Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Details:**" >> $GITHUB_STEP_SUMMARY
+          echo "- CSV File: \`${{ steps.validate.outputs.csv_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Items Processed: ${{ steps.validate.outputs.items_processed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifacts:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Results: \`validation-results-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Create release with results
-        if: github.event_name == 'push' && success()
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 📉 Generate failure summary
+        if: always() && steps.validate.outcome != 'success'
+        run: |
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Error Details:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "- Action: Review logs in [Actions](../../actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Troubleshooting:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check API keys are set in Secrets" >> $GITHUB_STEP_SUMMARY
+          echo "2. Verify CSV file format and path" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check Python dependencies in requirements.txt" >> $GITHUB_STEP_SUMMARY
+
+      # =====================================================================
+      # COMMIT BACK TO REPO
+      # =====================================================================
+
+      - name: 💾 Commit results back to repo
+        if: github.event_name == 'push' && steps.validate.outcome == 'success'
+        continue-on-error: true
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Add results
+          git add ${{ env.OUTPUT_DIR }}/test_output.csv
+          
+          # Create commit message
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          ITEMS=${{ steps.validate.outputs.items_processed }}
+          COMMIT_MSG="✅ Auto-validation: Processed $ITEMS items - $TIMESTAMP"
+          
+          # Commit and safely push (handles potential protected branch rules gracefully)
+          git commit -m "$COMMIT_MSG" && git push origin HEAD:${{ github.ref }} || echo "⚠️ No changes to commit or branch is protected."
+
+      # =====================================================================
+      # NOTIFICATIONS
+      # =====================================================================
+
+      - name: 🎉 Create success comment
+        if: github.event_name == 'pull_request' && success()
+        uses: actions/github-script@v7
         with:
-          tag_name: validation-${{ github.run_number }}
-          release_name: Validation Results #${{ github.run_number }}
-          body: |
-            ✅ Validation completed successfully
-            
-            **Results:** See attached CSV file
-            **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          draft: false
-          prerelease: false
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ **Validation Passed**\n\n- Items Processed: ${{ steps.validate.outputs.items_processed }}\n- Results: [validation-results-${{ github.run_number }}](../../actions/runs/${{ github.run_id }})`
+            })
 
-      - name: Notify on failure
+      - name: ❌ Create failure comment
+        if: github.event_name == 'pull_request' && failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ **Validation Failed**\n\nCheck [logs](../../actions/runs/${{ github.run_id }}) for details.`
+            })
+
+      - name: 📧 Notify on failure
         if: failure()
         run: |
-          echo "❌ Validation failed"
-          echo "Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "::error::Validation failed"
+          echo "::warning::Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # =========================================================================
+  # REPORTING JOB
+  # =========================================================================
+
+  report:
+    name: Generate Report
+    runs-on: ubuntu-latest
+    if: always()
+    needs: validate
+    
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - name: 📥 Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-results-${{ github.run_number }}
+          path: results
+
+      - name: 📊 Create check run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ needs.validate.outputs.status }}';
+            const conclusion = status === 'success' ? 'success' : 'failure';
+            
+            github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Perfume Validator',
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: {
+                title: 'Validation ' + (conclusion === 'success' ? '✅ Passed' : '❌ Failed'),
+                summary: 'Items Processed: ${{ needs.validate.outputs.items_processed }}',
+                text: 'See artifacts for detailed results'
+              }
+            });
+
+  # =========================================================================
+  # CLEANUP JOB
+  # =========================================================================
+
+  cleanup:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    permissions:
+      actions: write
+
+    steps:
+      - name: 🗑️ Delete old artifacts (> 30 days)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            
+            const now = new Date();
+            const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            
+            for (const artifact of artifacts.data.artifacts) {
+              const createdAt = new Date(artifact.created_at);
+              if (createdAt < thirtyDaysAgo) {
+                console.log(`Deleting artifact: ${artifact.name}`);
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id
+                });
+              }
+            }
