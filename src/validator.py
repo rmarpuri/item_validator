@@ -64,6 +64,9 @@ PRODUCT TYPE CONSTRAINTS:
 - TESTER: Name MUST end with TESTER.
 - GIFTSET (SAME FRAGRANCE): Do NOT include the words GIFTSET or GIFT SET anywhere. List components with + after fragrance name (e.g. CHANEL NO5 EDP 100ML + 50ML).
 - GIFTSET (DIFFERENT FRAGRANCES): Each component uses SHORT FRAGRANCE NAME + SIZE separated by + (e.g. CH 212 M EDT 100ML + CH 212 W EDP 75ML).
+
+CRITICAL INSTRUCTION FOR GIFT SETS:
+You MUST independently cross-reference the component types (EDT, EDP, PARFUM, BL, SG, SHAMPOO) listed in the search payload against the employee input. If the employee incorrectly labeled a component as 'EDT' but the search source proves it is 'Eau de Parfum', you MUST actively correct that component to 'EDP' in the output `corrected_name`. Never blindly trust the input component types.
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -209,16 +212,6 @@ def normalize_corrected_name(corrected_name: str, item: dict) -> str:
     corrected_name = normalize_short_forms(corrected_name, item)
     return normalize_giftset_name(corrected_name)
 
-def brand_matches_original(brand: str, original_entry: str) -> bool:
-    if not brand: return False
-    b, orig = brand.strip().upper(), (original_entry or "").upper()
-    if b in orig: return True
-    known_long_forms = {"DOLCE & GABBANA": "D&G", "DOLCE AND GABBANA": "D&G", "JEAN PAUL GAULTIER": "JPG", "CAROLINA HERRERA": "CH"}
-    for long_form, short in known_long_forms.items():
-        if short == b and (long_form in orig or short in orig): return True
-    tokens = re.split(r"[\s\-]+", orig)
-    return bool(tokens and tokens[0] and tokens[0] in b)
-
 def extract_first_url(text: str) -> str:
     if not text: return ""
     match = re.search(r"https?://[^\s\)\]\"]+", text)
@@ -231,7 +224,7 @@ def normalize_source_name(source: str) -> str:
     return re.sub(r"\.(com|net|org|io|co|fr|de|uk)$", "", source, flags=re.IGNORECASE)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — AGENT 2: SMART SEARCH (Waterfall Fallback Architecture)
+# STEP 3 — AGENT 2: SMART SEARCH
 # ══════════════════════════════════════════════════════════════════════════════
 
 TRUSTED_SITES = [
@@ -341,13 +334,13 @@ def _search_google_custom(query: str, num: int) -> list[dict]:
 
 def execute_search_query(query: str, num: int = 5) -> list[dict]:
     try:
-        return _search_brave(query, num)
-    except Exception as e:
-        log.warning(f"  [Fallback 2] Brave failed ({e}). Trying Google Custom...")
-    try:
         return _search_serper(query, num)
     except Exception as e:
         log.warning(f"  [Fallback 1] Serper failed ({e}). Trying Brave Search...")
+    try:
+        return _search_brave(query, num)
+    except Exception as e:
+        log.warning(f"  [Fallback 2] Brave failed ({e}). Trying Google Custom...")
     try:
         return _search_google_custom(query, num)
     except Exception as e:
@@ -371,7 +364,6 @@ def deduplicate_results(results: list[dict]) -> list[dict]:
 
 def search_product(item_name: str) -> str:
     all_results = []
-
     ebay_results = [r for r in execute_search_query(f"site:ebay.com {item_name} perfume") if r["trust_score"] == 10]
     if ebay_results:
         log.info(f"  ✓ Found {len(ebay_results)} authoritative records on eBay")
@@ -399,7 +391,7 @@ def validate_with_gemini_with_retry(item: dict, search_result: str, max_retries:
         system_instruction=(
             "You are a perfume validation bot. Return structural JSON only. "
             "Examine search text payload fields to deduce the country where the fragrance was manufactured. "
-            "Return the two-character ISO code for country of origin in 'country_of_origin' field (e.g., FR, IT, US, ES)."
+            "For giftsets, intensely verify the EDP vs EDT status of EACH component."
         ),
     )
 
@@ -445,12 +437,10 @@ Respond ONLY with valid JSON — no markdown, no explanation:
                     match_alt = re.search(r"Please retry in (\d+(?:\.\d+)?)s", err_msg)
                     if match_alt:
                         wait = float(match_alt.group(1)) + 2.0
-
                 log.warning(f"  ⚠️ [Attempt {attempt}/{max_retries}] Gemini Quota Limit hit. Sleeping {wait:.2f}s...")
                 time.sleep(wait)
             else:
                 raise e
-                
     return {"corrected_name": get_item_name(item), "remarks": "Rate limit failure", "needs_review": True}
 
 def validate_with_gemini(item: dict, search_result: str) -> dict:
@@ -466,17 +456,39 @@ def validate_with_gemini(item: dict, search_result: str) -> dict:
             corrected_name = validation["corrected_name"].upper()
             required_type = validation.get("type", "").upper()
             required_size = validation.get("size_ml", "").upper()
+            is_giftset = is_giftset_name(corrected_name)
             
+            # --- Robust Suffix Extraction & Assignment Logic ---
             cat_code = item.get("Item Category Code", "").upper()
-            suffix_to_append = next((s for s in ["VIAL", "MINI SET", "MINI", "TESTER"] if cat_code in [s+"S", "MINIATURES"]), "")
+            suffix_to_append = ""
+            if cat_code == "VIALS": suffix_to_append = "VIAL"
+            elif cat_code in ["MINIATURES", "MINIS"]: suffix_to_append = "MINI"
+            elif cat_code == "MINI SETS": suffix_to_append = "MINI SET"
+            elif cat_code == "TESTERS": suffix_to_append = "TESTER"
             
-            if suffix_to_append and corrected_name.endswith(suffix_to_append):
-                corrected_name = corrected_name[:-len(suffix_to_append)].strip()
+            if suffix_to_append:
+                # 1. Brutally purge all potential permutations and typos of suffixes out of the string using Regex
+                variants = []
+                if suffix_to_append == "VIAL":
+                    variants = [r"\bVIALS?\b", r"\bVAILS?\b"] # catches vial, vials, vail, vails
+                elif suffix_to_append == "MINI":
+                    variants = [r"\bMINIS?\b", r"\bMINIATURES?\b"]
+                elif suffix_to_append == "MINI SET":
+                    variants = [r"\bMINI\s*SETS?\b", r"\bMINIS?\b"]
+                elif suffix_to_append == "TESTER":
+                    variants = [r"\bTESTERS?\b"]
 
-            if required_type and required_type not in corrected_name and not is_giftset_name(corrected_name):
+                for var in variants:
+                    corrected_name = re.sub(var, "", corrected_name, flags=re.IGNORECASE)
+                corrected_name = " ".join(corrected_name.split()) # clean internal spacing
+
+            # 2. Append general types and size (unless gift set)
+            if required_type and required_type not in corrected_name and not is_giftset:
                 corrected_name = f"{corrected_name} {required_type}"
-            if required_size and required_size not in corrected_name and not is_giftset_name(corrected_name):
+            if required_size and required_size not in corrected_name and not is_giftset:
                 corrected_name = f"{corrected_name} {required_size}"
+                
+            # 3. Neatly append the single, correct suffix at the absolute end
             if suffix_to_append:
                 corrected_name = f"{corrected_name} {suffix_to_append}"
             
