@@ -12,10 +12,6 @@ on:
         description: 'Max items to process (0 for all)'
         required: false
         default: '0'
-      verbose:
-        description: 'Enable verbose logging'
-        required: false
-        default: 'false'
 
   # Auto-trigger strictly on any case variation of data/items.csv pushes
   push:
@@ -87,6 +83,10 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          # Dynamically mapped from your repository secrets/variables configurations
+          GMAIL_USER: ${{ secrets.GMAIL_USER || vars.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL || vars.NOTIFY_EMAIL }}
         run: |
           set -e  # Exit on error
           
@@ -107,23 +107,14 @@ jobs:
           
           echo "📋 Validating Case-Matched Target: $TARGET_FILE"
           
-          # FIX: Default to '0' instead of 'all' when triggered by automated pushes
           MAX_ITEMS="${{ github.event.inputs.max_items || '0' }}"
-          VERBOSE="${{ github.event.inputs.verbose || 'false' }}"
           
-          # Build executable instruction string
-          CMD="python3 scripts/test_local.py '$TARGET_FILE'"
+          # Build standard script execution string strictly using accepted script arguments
+          CMD="python3 scripts/test_local.py '$TARGET_FILE' --output-dir ${{ env.OUTPUT_DIR }}"
           
-          # Only append parameter if it's explicitly set to an integer bound above 0
           if [ "$MAX_ITEMS" != "0" ] && [ "$MAX_ITEMS" != "" ]; then
             CMD="$CMD --max-items $MAX_ITEMS"
           fi
-          
-          if [ "$VERBOSE" = "true" ]; then
-            CMD="$CMD --verbose"
-          fi
-          
-          CMD="$CMD --output-dir ${{ env.OUTPUT_DIR }}"
           
           # Run verification engine
           echo "🚀 Executing pipeline: $CMD"
@@ -150,8 +141,8 @@ jobs:
           retention-days: ${{ env.ARTIFACT_RETENTION }}
           if-no-files-found: warn
 
-      - name: 📂 Upload logs (if verbose)
-        if: always() && (github.event.inputs.verbose == 'true' || github.event_name == 'push')
+      - name: 📂 Upload logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: validation-logs-${{ github.run_number }}
