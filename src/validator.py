@@ -147,11 +147,21 @@ def parse_csv(csv_text: str) -> list[dict]:
     return [row for row in reader]
 
 def get_item_name(item: dict) -> str:
-    for key in item:
-        if any(k in key.lower() for k in ["description", "name", "item", "fragrance"]):
-            val = item[key].strip()
-            if val: return val
-    return next((v.strip() for v in item.values() if v.strip()), "Unknown Item")
+    """Safely extract only the product name string from a CSV row."""
+    # 1. Try to find the dedicated description/name column safely
+    for key, val in item.items():
+        # Ensure the key exists and is a string before checking
+        if key and isinstance(key, str):
+            if any(k in key.lower() for k in ["description", "name", "item", "fragrance"]):
+                if val and isinstance(val, str) and val.strip():
+                    return val.strip()
+                    
+    # 2. Fallback: Return the very first valid text value in the row
+    for val in item.values():
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+            
+    return "Unknown Item"
 
 def get_item_search_key(item: dict) -> str:
     for key in item:
@@ -252,10 +262,14 @@ def trust_score(url: str) -> int:
 
 def serper_search_raw(query: str, num: int = 5) -> dict:
     try:
+        # Ensure this URL is exactly a plain string with NO markdown brackets
+        url = "https://google.serper.dev/search"
+        
         res = requests.post(
-            "[https://google.serper.dev/search](https://google.serper.dev/search)",
+            url,
             headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-            json={"q": query, "num": num}, timeout=10,
+            json={"q": query, "num": num}, 
+            timeout=10,
         )
         res.raise_for_status()
         return res.json()
