@@ -24,7 +24,7 @@ on:
       - 'scripts/**/*.py'
       - 'src/**/*.py'
       - 'requirements.txt'
-      - '.github/workflows/validator.yml'
+      - '.github/workflows/validate.yml'
 
 env:
   PYTHON_VERSION: '3.11'
