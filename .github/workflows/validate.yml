@@ -26,10 +26,6 @@ on:
       - 'requirements.txt'
       - '.github/workflows/validator.yml'
 
-  # Scheduled validation (daily at 2 AM UTC)
-  schedule:
-    - cron: '0 2 * * *'
-
 env:
   PYTHON_VERSION: '3.11'
   OUTPUT_DIR: output
@@ -182,7 +178,7 @@ jobs:
       # COMMIT BACK TO REPO
       # =====================================================================
 
-      - name: 💾 Commit results back to repo
+      - name: 💾 Commit results and delete input file
         if: github.event_name == 'push' && steps.validate.outcome == 'success'
         continue-on-error: true
         run: |
@@ -190,6 +186,13 @@ jobs:
           git config --local user.name "github-actions[bot]"
           
           git add ${{ env.OUTPUT_DIR }}/test_output.csv
+          
+          # Delete the processed CSV file
+          INPUT_FILE="${{ steps.validate.outputs.csv_file }}"
+          if [ -f "$INPUT_FILE" ]; then
+            echo "🗑️ Deleting processed input file: $INPUT_FILE"
+            git rm "$INPUT_FILE"
+          fi
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           ITEMS=${{ steps.validate.outputs.items_processed }}
