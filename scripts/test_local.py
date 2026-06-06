@@ -21,23 +21,43 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from src.validator import (
+    parse_csv, search_product, validate_with_strict_gemini,
+    results_to_csv, compute_stats, get_item_name, get_item_search_key
+)
+
 # ── Sample test data — edit to match your real inventory columns ──────────────
-SAMPLE_CSV = """Name,Quantity,Type,Size,Gender
-Chanel Bleu edp,3,edp,100,
-dior sauvage edt 75ml,5,EDT,75,men
-CHANEL NO 5 EDP,2,edp,200ml,women
-YSL Black Opium 90,1,edp,90,
-versace eros EDT,4,edt,100ml,Men
-Jo Malone Peony & Blush Suede,2,,100,women
-Creed Aventus 50,1,edp,50,Men
+SAMPLE_CSV = """Product Code,Description,GTIN,WMS Item Group,Item Category Code,Country Of Origin,User ID,
+VDA008,DAVIDOFF COOLWATER ELIXIR M PARFUM 1.2ML VIAL ,3616307430548,DAVIDOFF,VIALS,FR,SEND BY NAV
+MCL034,CHLOE NOMADE JARDIN EGYPT EDP 5ML MINI ,3616305943033,CHLOE,MINIATURES,ES,SEND BY NAV
+VCL021,CHLOE NOMADE JARDIN EGYPT EDP 1.2ML VIAL ,3616305943040,CHLOE,VIALS,FR,SEND BY NAV
+VMR047,MARLY ATHENAIS EDP 1.5ML VIAL ,3700578509925,MARLY,VIALS,FR,SEND BY NAV
 """
 
-def run_test(csv_path=None, max_items=10, verbose=False, output_dir="output"):
-    from src.validator import (
-        parse_csv, search_product, validate_with_gemini,
-        results_to_csv, compute_stats, get_item_name
-    )
 
+def build_search_query(item: dict) -> str:
+    name = get_item_name(item)
+    search_key = get_item_search_key(item)
+    if search_key and search_key != name:
+        return f"{name} {search_key}"
+    return name
+
+
+def print_validation_summary(validation: dict, verbose: bool = False) -> None:
+    print(f"  ✅ Corrected: {validation.get('corrected_name', '')}")
+    print(f"  🔎 Source Used: {validation.get('source_used', 'unknown')}")
+    print(f"  🎯 Confidence: {validation.get('confidence', '')}")
+    print(f"  ⚠ Needs review: {'YES' if validation.get('needs_review') else 'NO'}")
+    print(f"  📝 Remarks:  {validation.get('remarks', '')}")
+    if verbose:
+        print(f"  📌 Source Extracted: {json.dumps(validation.get('source_extracted', {}), indent=2)}")
+        print(f"  📌 User Extracted:   {json.dumps(validation.get('user_extracted', {}), indent=2)}")
+        print(f"  📌 Validation:       {json.dumps(validation.get('validation', {}), indent=2)}")
+        print(f"  📌 Discrepancies:    {json.dumps(validation.get('discrepancies', []), indent=2)}")
+        print(f"  📌 Corrections:      {json.dumps(validation.get('corrections_applied', []), indent=2)}")
+    print()
+
+def run_test(csv_path=None, max_items=0, verbose=False, output_dir="output"):
     print("=" * 60)
     print("PERFUME VALIDATOR — LOCAL TEST")
     print("=" * 60)
@@ -78,20 +98,16 @@ def run_test(csv_path=None, max_items=10, verbose=False, output_dir="output"):
         name = get_item_name(item)
         print(f"[{i}/{len(items)}] {name}")
 
-        search = search_product(item)
+        query = build_search_query(item)
+        search = search_product(query)
         if verbose:
+            print(f"  🔍 Search Query: {query}")
             print(f"  🔍 Detailed Search Results Data:\n{search}\n")
         else:
             print(f"  🔍 Search: {search[:80].strip()}...")
 
-        validation = validate_with_gemini(item, search)
-        print(f"  ✅ Corrected: {validation.get('corrected_name', '')}")
-        print(f"  📝 Remarks:  {validation.get('remarks', '')}")
-        print(f"  🎯 Confidence: {validation.get('confidence', '')}")
-        
-        if verbose:
-            print(f"  📦 Full Internal JSON Payload:\n{json.dumps(validation, indent=2)}")
-        print()
+        validation = validate_with_strict_gemini(item, search)
+        print_validation_summary(validation, verbose=verbose)
 
         results.append({
             "original_entry": name,
